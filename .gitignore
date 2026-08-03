@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# 本机凭据配置；提交 config.example.yaml，不提交真实账号/许可证
+config/config.yaml
+config/*.csv
+.env
+.env.*
+!.env.example
+
+# 所有行情、信号、截图和运行日志等数据产物
+data/
+
+# 前端依赖和构建产物
+web/node_modules/
+web/*.tsbuildinfo
+frontend/dist/
+frontend/dashboard.html

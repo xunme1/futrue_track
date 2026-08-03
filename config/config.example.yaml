@@ -1,0 +1,43 @@
+# 复制为 config/config.yaml 后使用。敏感值建议通过环境变量提供，保持这里为空。
+account:
+  username: ""
+  password: ""
+
+data_source:
+  # 仅作为 contracts.yaml 条目缺少 source 时的默认值；可被 download --source 临时覆盖。
+  futures: "ricequant"
+
+ricequant:
+  license_key: ""
+
+symbols:
+  future: ""
+  index: "NHCI.SL"
+
+data:
+  start_date: "2026-01-27"
+  end_date: "2026-07-28"
+  main_period: "D"
+
+strategy:
+  G1: 4.0
+  G2: 3.0
+  lookback_shape: 30
+  shoulder_min_bars: 8
+  panzheng_range: 7
+  panzheng_threshold: 0.03
+  weekly_ma: 7
+  rs_window: 7
+  rs_strong_up: 1.5
+  rs_strong_dn: 0.7
+  rs_weak_up: 0.7
+  rs_weak_dn: 1.5
+  opi_surge_pct: 0.04
+  opi_super_pct: 0.07
+  opi_super_abs: 40000
+  price_confirm_pct: 0.03
+  wash_pct: 0.03
+  wash_hard_pct: 0.05
+
+output:
+  dir: "data"
