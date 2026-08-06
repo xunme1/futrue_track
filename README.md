@@ -91,10 +91,11 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 ## 日常使用
 
 ```bash
-# 每天收盘后依次执行（两条命令）：
+# 每天收盘后依次执行：
 .venv/Scripts/python -m backend.pipeline.download   # 1. 增量更新本地行情库
 .venv/Scripts/python -m backend.pipeline.daily      # 2. 本地计算信号
-.venv/Scripts/python tools/make_dashboard.py        # 3. 重建看板（打开 frontend/dashboard.html，锚点 #品种）
+.venv/Scripts/python -m backend.pipeline.screen     # 3. 生成筛选榜单（data/screening/latest.json）
+.venv/Scripts/python tools/make_dashboard.py        # 4. 重建旧版离线快照（可选）
 
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种
@@ -125,6 +126,22 @@ $env:FUTURES_RQDATA_LICENSE_KEY = "你的许可证"
 ```
 
 `config/config.yaml` 已加入 `.gitignore`，只应作为本机配置使用。已经外泄或曾提交过的凭据仍需在数据供应商处主动轮换。
+
+## Ubuntu 服务器日更（Cron）
+
+期货日线的触发时间以较慢的数据源为准：RiceQuant 提供 `future_daybar` 的 `is_data_ready` 状态查询；iFinD 说明盘后行情通常在收盘后 1–2 小时入库。因此建议将任务设在**上海时间工作日 17:30**，而不是收盘后立即运行。
+
+服务器上把 iFinD/RiceQuant 凭据写入受保护的 `/etc/future-track.env`，并确认 iFinD Linux SDK 位于 `/opt/ifind-sdk/bin64`（不同路径可通过环境变量覆盖）。首次手动验证后：
+
+```bash
+chmod 700 /opt/futrue_track/tools/refresh_daily.sh
+crontab -e
+
+# 周一至周五 17:30；服务器时区应为 Asia/Shanghai
+30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
+```
+
+脚本会依次运行下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
 
 ## 扩展指南
 
