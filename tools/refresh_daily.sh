@@ -30,7 +30,12 @@ if ! flock -n 9; then
   exit 0
 fi
 
-trap 'code=$?; echo "[$(date '+%F %T %Z')] 日更失败，退出码=${code}"; exit "${code}"' ERR
+on_error() {
+  local code=$?
+  echo "[$(date '+%F %T %Z')] 日更失败，退出码=${code}"
+  exit "${code}"
+}
+trap on_error ERR
 
 echo "===== $(date '+%F %T %Z') 日更开始 ====="
 cd "${PROJECT_ROOT}"
