@@ -13,6 +13,7 @@
 """
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -28,9 +29,20 @@ EXPORT_COLS = ["open", "high", "low", "close", "volume", "ccl", "PQ", "PR", "NN"
                "SIGNAL", "POS", "SB", "DSB", "DSBE", "DSBE_NOTE"]
 
 
+def _json_safe(value):
+    """将 Pandas/策略计算中的 NaN、无穷值递归替换为标准 JSON null。"""
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
 def build_payload(symbol, df):
     """把策略结果转换成前端 API 契约，便于独立测试。"""
-    return {
+    payload = {
         "symbol": symbol,
         "dates": df.index.strftime("%Y-%m-%d").tolist(),
         "ohlc": df[["open", "close", "low", "high"]].round(4).values.tolist(),  # ECharts 顺序 O C L H
@@ -57,6 +69,7 @@ def build_payload(symbol, df):
         "POS": df["POS"].tolist(),
         "ZD": df["ZD"].where(df["ZD"].notna(), None).tolist(),
     }
+    return _json_safe(payload)
 
 
 def export(symbol, df):
@@ -65,7 +78,7 @@ def export(symbol, df):
     df[EXPORT_COLS].to_csv(CSV_DIR / f"signals_{key}.csv", encoding="utf-8-sig")
     payload = build_payload(symbol, df)
     with open(JSON_DIR / f"{key}.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+        json.dump(payload, f, ensure_ascii=False, allow_nan=False)
     n_sig = df["SIGNAL"].ne("").sum()
     counts = {name: int(count) for name, count in
               df["SIGNAL"][df["SIGNAL"].ne("")].value_counts().items()}
