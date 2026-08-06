@@ -1,0 +1,113 @@
+import unittest
+
+from backend.pipeline.screen import BUCKETS, _sort_results, flatten_report, screen_payload, wilder_atr
+
+
+def payload(n=16, close=100.0):
+    closes = [close] * n
+    return {
+        "symbol": "TST.TEST",
+        "dates": [f"2026-01-{i + 1:02d}" for i in range(n)],
+        "ohlc": [[v, v, v - 1, v + 1] for v in closes],
+        "PQ": [False] * n,
+        "PR": [False] * n,
+        "POS": [0] * n,
+        "DD": [105.0] * n,
+        "EE": [95.0] * n,
+        "KK": [95.0] * n,
+        "PP": [105.0] * n,
+    }
+
+
+CONTRACT = {"symbol": "TST.TEST", "name": "测试", "category": "测试", "exchange": "TEST"}
+
+
+class ScreenTests(unittest.TestCase):
+    def test_wilder_atr_uses_true_range_and_warmup(self):
+        bars = [[10, 10, 9, 11], [10, 12, 11, 13], [12, 11, 10, 12]]
+        atr = wilder_atr(bars, window=2)
+        self.assertIsNone(atr[0])
+        self.assertEqual(atr[1], 2.5)  # (2 + 3) / 2
+        self.assertEqual(atr[2], 2.25)  # (2.5 + 2) / 2
+
+    def test_main_trends_allow_boundary_equality_and_sort_by_score(self):
+        long_d = payload(close=100)
+        long_d["ohlc"][-1] = [110, 110, 109, 111]
+        long_d["PQ"][-1], long_d["POS"][-1], long_d["EE"][-1] = True, 1, 110
+        short_d = payload(close=100)
+        short_d["ohlc"][-1] = [90, 90, 89, 91]
+        short_d["PR"][-1], short_d["POS"][-1], short_d["PP"][-1] = True, -1, 90
+
+        long_hits = screen_payload("long", long_d, CONTRACT)
+        short_hits = screen_payload("short", short_d, CONTRACT)
+        self.assertEqual(len(long_hits["long_trend"]), 1)
+        self.assertGreater(long_hits["long_trend"][0]["score"], 0)
+        self.assertEqual(len(short_hits["short_trend"]), 1)
+        self.assertLess(short_hits["short_trend"][0]["score"], 0)
+
+    def test_transitions_require_first_target_bar_break_and_continuity(self):
+        down = payload()
+        down["PQ"][13], down["POS"][13] = True, 1
+        down["PR"][14], down["PR"][15] = True, True
+        down["ohlc"][14] = [90, 90, 89, 91]
+        down["EE"][14] = 95
+        hits = screen_payload("down", down, CONTRACT)
+        self.assertEqual(hits["long_to_short"][0]["transition_date"], down["dates"][14])
+
+        equality = payload()
+        equality["PQ"][13], equality["POS"][13] = True, 1
+        equality["PR"][14], equality["PR"][15] = True, True
+        equality["ohlc"][14] = [95, 95, 94, 96]
+        equality["EE"][14] = 95
+        self.assertFalse(screen_payload("equal", equality, CONTRACT)["long_to_short"])
+
+        interrupted = payload()
+        interrupted["PQ"][13], interrupted["POS"][13] = True, 1
+        interrupted["PR"][14], interrupted["PR"][15] = True, True
+        interrupted["ohlc"][14] = [90, 90, 89, 91]
+        interrupted["EE"][14] = 95
+        interrupted["PQ"][15] = True
+        self.assertFalse(screen_payload("interrupted", interrupted, CONTRACT)["long_to_short"])
+
+    def test_short_to_long_transition_and_warning(self):
+        up = payload()
+        up["PR"][13], up["POS"][13] = True, -1
+        up["PQ"][14], up["PQ"][15] = True, True
+        up["ohlc"][14] = [110, 110, 109, 111]
+        up["PP"][14] = 105
+        hits = screen_payload("up", up, CONTRACT)
+        self.assertEqual(hits["short_to_long"][0]["transition_date"], up["dates"][14])
+        self.assertEqual(hits["short_to_long"][0]["transition_boundary"], "PP")
+
+        warning = payload(close=100)
+        warning["PQ"][-1], warning["POS"][-1] = True, -1
+        warning["KK"][-1], warning["PP"][-1] = 95, 105
+        self.assertEqual(len(screen_payload("warning", warning, CONTRACT)["short_to_long_warning"]), 1)
+
+    def test_directional_sorting(self):
+        results = {bucket: [] for bucket in BUCKETS}
+        results["long_trend"] = [{"score": 0.2}, {"score": 0.8}]
+        results["short_trend"] = [{"score": -0.2}, {"score": -1.1}]
+        results["short_to_long"] = [{"score": 0.1}, {"score": 0.5}]
+        results["long_to_short"] = [{"score": -0.1}, {"score": -0.7}]
+        _sort_results(results)
+        self.assertEqual([item["score"] for item in results["long_trend"]], [0.8, 0.2])
+        self.assertEqual([item["score"] for item in results["short_trend"]], [-1.1, -0.2])
+        self.assertEqual([item["score"] for item in results["short_to_long"]], [0.5, 0.1])
+        self.assertEqual([item["score"] for item in results["long_to_short"]], [-0.7, -0.1])
+
+    def test_warnings_and_report_rows(self):
+        warning = payload(close=100)
+        warning["PR"][-1], warning["POS"][-1] = True, 1
+        warning["EE"][-1], warning["DD"][-1] = 95, 105
+        self.assertEqual(len(screen_payload("warning", warning, CONTRACT)["long_to_short_warning"]), 1)
+
+        report = {"buckets": {bucket: [] for bucket in BUCKETS}}
+        report["buckets"]["long_to_short_warning"] = screen_payload("warning", warning, CONTRACT)["long_to_short_warning"]
+        rows = flatten_report(report)
+        self.assertEqual(rows[0]["bucket"], "long_to_short_warning")
+        self.assertEqual(rows[0]["bucket_name"], "多转空预警")
+
+
+if __name__ == "__main__":
+    unittest.main()

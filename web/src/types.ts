@@ -59,3 +59,54 @@ export interface SignalData {
   ZD: (number | null)[]                       // 七日中点线
   DSBE_NOTE?: (string | null)[]                // DSBE 附加文字；可选用于兼容旧 JSON
 }
+
+/** 筛选报告的类别；榜单首页仅展示前四类主筛。 */
+export type ScreeningBucket =
+  | 'long_trend'
+  | 'short_trend'
+  | 'long_to_short'
+  | 'short_to_long'
+  | 'long_to_short_warning'
+  | 'short_to_long_warning'
+
+/** GET /api/screening 的榜单条目。 */
+export interface ScreeningItem {
+  key: string
+  symbol: string
+  name: string
+  category: string
+  exchange: string
+  date: string
+  close: number
+  ma7: number
+  atr14: number
+  score: number
+  PQ: boolean
+  PR: boolean
+  POS: number
+  DD: number | null
+  EE: number | null
+  KK: number | null
+  PP: number | null
+  transition_date?: string
+  transition_from?: 'red' | 'blue'
+  transition_to?: 'red' | 'blue'
+  transition_close?: number
+  transition_boundary?: 'EE' | 'PP'
+  transition_boundary_value?: number
+}
+
+export interface ScreeningReport {
+  generated_at: string
+  rules: {
+    lookback: number
+    atr_window: number
+    atr_method: string
+    ma_window: number
+    score: string
+  }
+  scanned_symbols: number
+  skipped_symbols: string[]
+  summary: Record<ScreeningBucket, number>
+  buckets: Record<ScreeningBucket, ScreeningItem[]>
+}

@@ -18,9 +18,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..core.config import JSON_DIR, PROJECT_ROOT, load_contracts
+from ..core.config import DATA_DIR, JSON_DIR, PROJECT_ROOT, load_contracts
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+SCREENING_FILE = DATA_DIR / "screening" / "latest.json"
 
 app = FastAPI(title="期货指标监测 API", version="0.2.0")
 
@@ -31,6 +32,20 @@ def _load_payload(key: str) -> dict:
         return None
     with open(fp, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _load_screening() -> dict:
+    """读取最新筛选报告；报告由 backend.pipeline.screen 生成。"""
+    if not SCREENING_FILE.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="筛选报告不存在，请先运行 python -m backend.pipeline.screen",
+        )
+    try:
+        with open(SCREENING_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"筛选报告读取失败: {exc}") from exc
 
 
 @app.get("/api/health")
@@ -78,6 +93,12 @@ def symbols():
             "last_signal": last_sig,
         })
     return out
+
+
+@app.get("/api/screening")
+def screening():
+    """最新筛选榜单报告（四类主筛 + 两类预警）。"""
+    return _load_screening()
 
 
 @app.get("/api/signals/{key}")

@@ -70,7 +70,32 @@
 
 ---
 
-## 4. GET /api/signals/{key}
+## 4. GET /api/screening
+
+读取最新的本地筛选报告。前端首页用此接口构建筛选榜单；报告不会由 API 实时计算，需在每日数据计算完成后先执行：
+
+```powershell
+.venv\Scripts\python.exe -m backend.pipeline.screen
+```
+
+报告文件为 `data/screening/latest.json`。响应中 `generated_at` 为报告生成时间，`summary` 为每组命中数量，`buckets` 保存按既定强弱排序的结果。四类主筛分别是：
+
+| bucket | 含义 | 排序 |
+|---|---|---|
+| `long_trend` | 多头趋势：红 K、持多、收盘价不低于 EE | score 降序 |
+| `short_trend` | 空头趋势：蓝 K、持空、收盘价不高于 PP | score 升序 |
+| `long_to_short` | 最近 8 根内多头转空，蓝 K 连续且跌破 EE | score 升序 |
+| `short_to_long` | 最近 8 根内空头转多，红 K 连续且突破 PP | score 降序 |
+
+`buckets` 同时包含 `long_to_short_warning` 与 `short_to_long_warning` 两类预警，供其他页面或程序使用；首页榜单不显示它们。
+
+每个条目均包含 `key`、`symbol`、`name`、`date`、`close`、`ma7`、`atr14`、`score`、`PQ`、`PR`、`POS`、`DD`、`EE`、`KK`、`PP`。其中 `score = (close - ma7) / atr14`。转换条目还包含 `transition_date`、`transition_close`、`transition_boundary` 和 `transition_boundary_value`，用于定位首次变色及突破边界。
+
+报告不存在时返回 `404`，并提示先运行上述筛选命令；报告 JSON 损坏或无法读取时返回 `500`。
+
+---
+
+## 5. GET /api/signals/{key}
 
 某品种**完整看板数据**（K 线 + 交易信号 + 趋势带通道 + 资金标记 + 过滤器状态）。
 `{key}` 取自 /api/contracts 的 `key` 字段，如 `/api/signals/TA609`。
@@ -117,7 +142,7 @@
 
 ---
 
-## 5. GET / （静态目录）
+## 6. GET / （静态目录）
 
 托管 `frontend/` 目录（`html=True`，`/` 即 `dashboard.html`）。
 正式前端工程打包产物放入 `frontend/` 即可同源部署，无跨域问题。

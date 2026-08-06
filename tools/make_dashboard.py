@@ -71,7 +71,7 @@ HTML = r"""<!DOCTYPE html>
 <div id="bar">
   <b style="margin-right:8px">信号看板</b>
   <span id="btns"></span>
-  <span class="tip">红K=强于南华指数 · 蓝K=弱于指数 · 灰K=强弱中性 · ▲BK开多 ▼SK开空 · ◆SB/DSB资金信号 · 虚线=持仓通道</span>
+  <span class="tip">红K=强于南华指数 · 蓝K=弱于指数 · 灰K=强弱中性 · ▲BK开多 ▼SK开空 · 🤭SB / 🤔DSB / 👎DSBE资金信号 · 虚线=持仓通道</span>
 </div>
 <div id="chart"></div>
 
@@ -118,14 +118,14 @@ HTML = r"""<!DOCTYPE html>
         <td><b>七日中点 ZD</b>：近 7 日最高价与最低价的中值，价格强弱的分水岭（上方偏强、下方偏弱）</td></tr>
   </table>
 
-  <h3>四、资金信号钻石（持仓量 OPI 驱动，只提示不下单）</h3>
+  <h3>四、资金信号 emoji（持仓量 OPI 驱动，只提示不下单）</h3>
   <table>
     <tr><th>标记</th><th>含义</th><th>触发条件</th></tr>
-    <tr><td><span class="tag" style="color:#ffd700">◆SB</span></td><td><b>多头增仓</b></td>
+    <tr><td><span class="tag">🤭 SB</span></td><td><b>多头增仓</b></td>
         <td>持仓量单日 +4% 且价格涨 3%（或连续两日增仓创新高），KDJ 不超买（K&lt;85），且是近 5 根内首次出现；或增仓 ≥7%/超 4 万手的超级增仓——新钱在买</td></tr>
-    <tr><td><span class="tag" style="color:#ff9d00">◆DSB</span></td><td><b>洗盘后站起来</b></td>
+    <tr><td><span class="tag">🤔 DSB</span></td><td><b>洗盘后站起来</b></td>
         <td>两根前收阴，今日收盘收复近两根实体区间上 1/3，且期间持仓量换手 &gt;3%——浮筹被洗干净，少数人获利，多头更稳</td></tr>
-    <tr><td><span class="tag" style="color:#b266ff">◆DSBE</span></td><td><b>反击扑灭</b>（做空版）</td>
+    <tr><td><span class="tag">👎 DSBE</span></td><td><b>反击扑灭</b>（做空版）</td>
         <td>两根前收阳，今日收盘被砸进实体区间下 1/3 且伴随巨量换手——多头反击失败，跌势大概率延续。悬停可见附加判断：「减仓耗散筹码变轻」=多头割肉离场、跌势或近尾声；「增仓能量增强」=新空头加码、跌势延续</td></tr>
   </table>
 
@@ -188,16 +188,18 @@ function render(key) {
             itemStyle: {color: st.c}, label: {show: true, formatter: st.t, color: st.c,
             fontWeight: 'bold', fontSize: 13, position: st.pos, distance: 6}};
   });
-  // 资金信号：SB/DSB 金钻、DSBE 紫钻
+  // Canvas 对 Unicode emoji 的字体回退不稳定，改为 SVG 图片符号。
+  const emojiSymbol = emoji => 'image://data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">' +
+    '<text x="14" y="23" text-anchor="middle" font-size="24" font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji">' + emoji + '</text></svg>'
+  );
+  // 资金信号 emoji：🤭 SB / 🤔 DSB / 👎 DSBE
   d.SB.forEach((v, i)   => { if (v) sigPts.push({coord: [i, d.ohlc[i][2] * 0.995], value: 'SB',
-      symbol: 'diamond', symbolSize: 12, itemStyle: {color: '#ffd700'},
-      label: {show: true, formatter: 'SB', color: '#ffd700', fontSize: 10, position: 'bottom'}}); });
+      symbol: emojiSymbol('🤭'), symbolSize: 24, label: {show: false}}); });
   d.DSB.forEach((v, i)  => { if (v) sigPts.push({coord: [i, d.ohlc[i][2] * 0.99], value: 'DSB',
-      symbol: 'diamond', symbolSize: 12, itemStyle: {color: '#ff9d00'},
-      label: {show: true, formatter: 'DSB', color: '#ff9d00', fontSize: 10, position: 'bottom'}}); });
+      symbol: emojiSymbol('🤔'), symbolSize: 24, label: {show: false}}); });
   d.DSBE.forEach((v, i) => { if (v) sigPts.push({coord: [i, d.ohlc[i][3] * 1.005], value: 'DSBE',
-      symbol: 'diamond', symbolSize: 12, itemStyle: {color: '#b266ff'},
-      label: {show: true, formatter: 'DSBE', color: '#b266ff', fontSize: 10, position: 'top'}}); });
+      symbol: emojiSymbol('👎'), symbolSize: 24, label: {show: false}}); });
 
   // NN/GG 强弱数字（默认隐藏，图例可开）
   const nnPts = [], ggPts = [];
@@ -243,9 +245,9 @@ function render(key) {
         if (s) h += `<b style="color:${sigStyle[s.type].c}">信号：${s.type}</b><br>`;
         if (d.PQ[i]) h += '<span style="color:#ff5252">强于南华指数</span><br>';
         if (d.PR[i]) h += '<span style="color:#2979ff">弱于南华指数</span><br>';
-        if (d.SB[i]) h += '<span style="color:#ffd700">SB 多头增仓</span><br>';
-        if (d.DSB[i]) h += '<span style="color:#ff9d00">DSB 洗盘后站起</span><br>';
-        if (d.DSBE[i]) h += '<span style="color:#b266ff">DSBE 反击扑灭</span><br>';
+        if (d.SB[i]) h += '<span>🤭 SB 多头增仓</span><br>';
+        if (d.DSB[i]) h += '<span>😓 DSB 洗盘后站起</span><br>';
+        if (d.DSBE[i]) h += '<span>👎 DSBE 反击扑灭</span><br>';
         h += `周线许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`;
         return h;
       }},

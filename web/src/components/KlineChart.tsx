@@ -40,15 +40,22 @@ export default function KlineChart({ data }: Props) {
     chartRef.current = chart
     const onResize = () => chart.resize()
     window.addEventListener('resize', onResize)
+    const observer = new ResizeObserver(onResize)
+    observer.observe(elRef.current)
     return () => {
       window.removeEventListener('resize', onResize)
+      observer.disconnect()
       chart.dispose()
       chartRef.current = null
     }
   }, [])
 
   useEffect(() => {
-    if (!chartRef.current || !data) return
+    if (!chartRef.current) return
+    if (!data) {
+      chartRef.current.clear()
+      return
+    }
     chartRef.current.setOption(buildOption(data), { notMerge: true })
   }, [data])
 

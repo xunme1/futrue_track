@@ -23,6 +23,21 @@ const SIG_STYLE: Record<SigType, { c: string; t: string; pos: 'top' | 'bottom' }
   BP: { c: '#ffaa00', t: '▽BP', pos: 'bottom' },
 }
 
+const FUNDING_EMOJI = {
+  SB: '🤭',
+  DSB: '🤔',
+  DSBE: '👎',
+} as const
+
+/**
+ * ECharts 使用 Canvas 渲染时，Unicode emoji 文本在部分 Windows 字体回退链中不可见。
+ * 将 emoji 包装为 SVG 图片符号，保证它作为图像而非 Canvas 文本渲染。
+ */
+function emojiSymbol(emoji: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><text x="14" y="23" text-anchor="middle" font-size="24" font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji">${emoji}</text></svg>`
+  return `image://data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`
+}
+
 /** 只在持仓方向 want（1多/-1空）期间保留通道线值 */
 function mask(arr: (number | null)[], posArr: number[], want: number): (number | null)[] {
   return arr.map((v, i) => (posArr[i] === want ? v : null))
@@ -48,26 +63,23 @@ export function buildOption(d: SignalData): EChartsOption {
       label: { show: true, formatter: st.t, color: st.c, fontWeight: 'bold', fontSize: 13, position: st.pos, distance: 6 },
     }
   })
-  // 资金信号：SB/DSB 金橙钻、DSBE 紫钻
+  // 资金信号：以 emoji 标记，避免和交易信号箭头混淆。
   d.SB.forEach((v, i) => {
     if (v) sigPts.push({
-      coord: [i, d.ohlc[i][2] * 0.995], value: 'SB', symbol: 'diamond', symbolSize: 12,
-      itemStyle: { color: '#ffd700' },
-      label: { show: true, formatter: 'SB', color: '#ffd700', fontSize: 10, position: 'bottom' },
+      coord: [i, d.ohlc[i][2] * 0.995], value: 'SB', symbol: emojiSymbol(FUNDING_EMOJI.SB), symbolSize: 24,
+      label: { show: false },
     })
   })
   d.DSB.forEach((v, i) => {
     if (v) sigPts.push({
-      coord: [i, d.ohlc[i][2] * 0.99], value: 'DSB', symbol: 'diamond', symbolSize: 12,
-      itemStyle: { color: '#ff9d00' },
-      label: { show: true, formatter: 'DSB', color: '#ff9d00', fontSize: 10, position: 'bottom' },
+      coord: [i, d.ohlc[i][2] * 0.99], value: 'DSB', symbol: emojiSymbol(FUNDING_EMOJI.DSB), symbolSize: 24,
+      label: { show: false },
     })
   })
   d.DSBE.forEach((v, i) => {
     if (v) sigPts.push({
-      coord: [i, d.ohlc[i][3] * 1.005], value: 'DSBE', symbol: 'diamond', symbolSize: 12,
-      itemStyle: { color: '#b266ff' },
-      label: { show: true, formatter: 'DSBE', color: '#b266ff', fontSize: 10, position: 'top' },
+      coord: [i, d.ohlc[i][3] * 1.005], value: 'DSBE', symbol: emojiSymbol(FUNDING_EMOJI.DSBE), symbolSize: 24,
+      label: { show: false },
     })
   })
 
@@ -146,12 +158,12 @@ export function buildOption(d: SignalData): EChartsOption {
         if (s) h += `<b style="color:${SIG_STYLE[s.type].c}">信号：${s.type}</b><br>`
         if (d.PQ[i]) h += '<span style="color:#ff5252">强于南华指数</span><br>'
         if (d.PR[i]) h += '<span style="color:#2979ff">弱于南华指数</span><br>'
-        if (d.SB[i]) h += '<span style="color:#ffd700">SB 多头增仓</span><br>'
-        if (d.DSB[i]) h += '<span style="color:#ff9d00">DSB 洗盘后站起</span><br>'
+        if (d.SB[i]) h += `<span>🤭 SB 多头增仓</span><br>`
+        if (d.DSB[i]) h += `<span>😓 DSB 洗盘后站起</span><br>`
         if (d.DSBE[i]) {
-          h += '<span style="color:#b266ff">DSBE 反击扑灭</span>'
+          h += '<span>👎 DSBE 反击扑灭</span>'
           const note = d.DSBE_NOTE?.[i]
-          if (note) h += `<span style="color:#b266ff">（${note}）</span>`
+          if (note) h += `<span>（${note}）</span>`
           h += '<br>'
         }
         h += `周线许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`

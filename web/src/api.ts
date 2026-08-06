@@ -1,4 +1,4 @@
-import type { ContractInfo, SignalData } from './types'
+import type { ContractInfo, ScreeningReport, SignalData } from './types'
 
 async function getJson<T>(url: string): Promise<T> {
   const resp = await fetch(url)
@@ -17,4 +17,9 @@ export function fetchContracts(): Promise<ContractInfo[]> {
 /** 某品种完整图表数据 */
 export function fetchSignals(key: string): Promise<SignalData> {
   return getJson<SignalData>(`/api/signals/${encodeURIComponent(key)}`)
+}
+
+/** 最新本地筛选报告（由 backend.pipeline.screen 生成）。 */
+export function fetchScreening(): Promise<ScreeningReport> {
+  return getJson<ScreeningReport>('/api/screening')
 }
