@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchContracts, fetchScreening, fetchSignals } from './api'
 import type { ContractInfo, ScreeningBucket, ScreeningReport, SignalData } from './types'
-import Leaderboard, { MAIN_BUCKETS } from './components/Leaderboard'
+import Leaderboard, { LEADERBOARD_BUCKETS } from './components/Leaderboard'
 import LegendModal from './components/LegendModal'
 import KlineChart from './components/KlineChart'
 import SplitPane from './components/SplitPane'
@@ -13,7 +13,7 @@ function hashKey(): string {
 }
 
 function itemBucket(report: ScreeningReport, key: string): ScreeningBucket | null {
-  return MAIN_BUCKETS.find(({ key: bucket }) => report.buckets[bucket].some((item) => item.key === key))?.key ?? null
+  return LEADERBOARD_BUCKETS.find(({ key: bucket }) => report.buckets[bucket].some((item) => item.key === key))?.key ?? null
 }
 
 export default function App() {

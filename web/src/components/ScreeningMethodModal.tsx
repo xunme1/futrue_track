@@ -43,7 +43,12 @@ export default function ScreeningMethodModal({ open, onClose }: Props) {
 
         <h3>边界与颜色说明</h3>
         <p>DD–EE 是多头趋势带，EE 为下边界；KK–PP 是空头趋势带，PP 为上边界。主筛允许收盘价恰好落在对应边界上；转换筛要求严格突破。灰 K 不计入转换的目标色连续段。</p>
-        <p className="legend-note">榜单不显示两类预警：持多蓝 K 且 EE &lt; 收盘 ≤ DD 的多转空预警；持空红 K 且 KK ≤ 收盘 &lt; PP 的空转多预警。</p>
+        <h3>榜单预警类别</h3>
+        <ul>
+          <li><b>压力回踩</b>：持空时，最高价与收盘价均在 KK–PP 压力带内，收盘未上破 PP；表示压力仍有效，需留意反弹后的方向选择。</li>
+          <li><b>支撑回踩</b>：持多时，最低价与收盘价均在 EE–DD 支撑带内，且收盘严格高于下沿 EE；表示支撑仍有效，需留意反弹延续。</li>
+        </ul>
+        <p className="legend-note">报告中仍保留多转空、空转多两类转换预警，供策略分析使用；它们不显示在榜单预警区。</p>
       </section>
     </div>
   )

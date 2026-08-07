@@ -7,6 +7,13 @@ export const MAIN_BUCKETS: { key: ScreeningBucket; label: string }[] = [
   { key: 'short_to_long', label: '空转多' },
 ]
 
+export const WARNING_BUCKETS: { key: ScreeningBucket; label: string }[] = [
+  { key: 'short_pressure_warning', label: '压力回踩' },
+  { key: 'long_support_warning', label: '支撑回踩' },
+]
+
+export const LEADERBOARD_BUCKETS = [...MAIN_BUCKETS, ...WARNING_BUCKETS]
+
 interface Props {
   report: ScreeningReport | null
   error: string | null
@@ -32,7 +39,7 @@ export default function Leaderboard({
   report, error, bucket, activeKey, drawer = false, onBucketChange, onSelect, onShowMethod, onClose,
 }: Props) {
   const items = report?.buckets[bucket] ?? []
-  const activeMeta = MAIN_BUCKETS.find((item) => item.key === bucket)
+  const activeMeta = LEADERBOARD_BUCKETS.find((item) => item.key === bucket)
 
   return (
     <aside className={`leaderboard${drawer ? ' leaderboard-drawer' : ''}`} aria-label="筛选榜单">
@@ -62,6 +69,24 @@ export default function Leaderboard({
             <b>{report?.summary[item.key] ?? 0}</b>
           </button>
         ))}
+      </div>
+
+      <div className="leaderboard-warning-tabs" role="tablist" aria-label="趋势带预警">
+        <span className="leaderboard-warning-title">预警</span>
+        <div className="leaderboard-warning-buttons">
+          {WARNING_BUCKETS.map((item) => (
+            <button
+              key={item.key}
+              role="tab"
+              aria-selected={bucket === item.key}
+              className={`leaderboard-warning-tab${bucket === item.key ? ' active' : ''}`}
+              onClick={() => onBucketChange(item.key)}
+            >
+              <span>{item.label}</span>
+              <b>{report?.summary[item.key] ?? 0}</b>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="leaderboard-list" role="tabpanel">

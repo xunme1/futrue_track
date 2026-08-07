@@ -26,6 +26,8 @@ BUCKETS = (
     "short_to_long",
     "long_to_short_warning",
     "short_to_long_warning",
+    "short_pressure_warning",
+    "long_support_warning",
 )
 
 BUCKET_LABELS = {
@@ -35,6 +37,8 @@ BUCKET_LABELS = {
     "short_to_long": "空转多",
     "long_to_short_warning": "多转空预警",
     "short_to_long_warning": "空转多预警",
+    "short_pressure_warning": "空头压力预警",
+    "long_support_warning": "多头支撑预警",
 }
 
 
@@ -124,6 +128,16 @@ def _close(payload, index):
     return _number(bar[1]) if isinstance(bar, (list, tuple)) and len(bar) >= 2 else None
 
 
+def _low(payload, index):
+    bar = payload["ohlc"][index]
+    return _number(bar[2]) if isinstance(bar, (list, tuple)) and len(bar) >= 3 else None
+
+
+def _high(payload, index):
+    bar = payload["ohlc"][index]
+    return _number(bar[3]) if isinstance(bar, (list, tuple)) and len(bar) >= 4 else None
+
+
 def _make_item(key, payload, contract, index, ma7, atr14, **extra):
     close = _close(payload, index)
     score = None if close is None or ma7 is None or atr14 in (None, 0) else (close - ma7) / atr14
@@ -208,11 +222,28 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     if pos == -1 and color == "blue" and pp is not None and close <= pp:
         result["short_trend"].append(latest_item)
 
-    # 预警：颜色已反向，但价格仍处于来源趋势带内，尚未突破离场边界。
+    # 原有预警：颜色已反向，但价格仍处于来源趋势带内，尚未突破离场边界。
     if pos == 1 and color == "blue" and ee is not None and dd is not None and ee < close <= dd:
         result["long_to_short_warning"].append(latest_item)
     if pos == -1 and color == "red" and kk is not None and pp is not None and kk <= close < pp:
         result["short_to_long_warning"].append(latest_item)
+
+    # 趋势带预警：极值进入趋势带，收盘仍守住该趋势带的有效边界。
+    # 空头压力带为 KK~PP；最高价与收盘均在带内，且收盘没有上破 PP。
+    high = _high(payload, latest)
+    if (
+        pos == -1 and high is not None and kk is not None and pp is not None
+        and kk <= high <= pp and kk <= close <= pp
+    ):
+        result["short_pressure_warning"].append(latest_item)
+
+    # 多头支撑带为 EE~DD；最低价、收盘均在带内，且收盘严格高于下沿 EE。
+    low = _low(payload, latest)
+    if (
+        pos == 1 and low is not None and ee is not None and dd is not None
+        and ee <= low <= dd and ee < close <= dd
+    ):
+        result["long_support_warning"].append(latest_item)
 
     short_turn = _transition(payload, "blue", 1, "EE", lambda price, line: price < line, lookback)
     if short_turn:
@@ -235,7 +266,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
 
 
 def _sort_results(results):
-    descending = {"long_trend", "short_to_long", "short_to_long_warning"}
+    descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
         items.sort(key=lambda item: item["score"], reverse=bucket in descending)
 
@@ -277,6 +308,10 @@ def screen_contracts(contracts, json_dir=JSON_DIR, symbols=None, lookback=8, atr
             "atr_method": "wilder",
             "ma_window": 7,
             "score": "(close - MA7) / ATR14",
+            "trend_band_warnings": {
+                "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
+                "long_support_warning": "POS=1; EE<=low<=DD; EE<close<=DD",
+            },
         },
         "scanned_symbols": scanned,
         "skipped_symbols": skipped,

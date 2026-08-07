@@ -66,6 +66,13 @@ button { font: inherit; }
 .leaderboard-tab:hover { border-color: #536a98; color: #fff; }
 .leaderboard-tab.active { background: rgba(201, 58, 58, .18); border-color: #c93a3a; color: #fff; }
 .leaderboard-tab.active b { color: #ffadb4; }
+.leaderboard-warning-tabs { padding: 8px 12px 10px; border-bottom: 1px solid #232d45; }
+.leaderboard-warning-title { display: block; margin: 0 0 6px 2px; color: #d5a45e; font-size: 11px; font-weight: bold; }
+.leaderboard-warning-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.leaderboard-warning-tab { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; color: #aebadb; background: #1b2332; border: 1px solid #38445c; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.leaderboard-warning-tab b { color: #d5a45e; font-size: 11px; }
+.leaderboard-warning-tab:hover { color: #fff; border-color: #d5a45e; }
+.leaderboard-warning-tab.active { color: #fff; background: rgba(213, 164, 94, .14); border-color: #d5a45e; }
 .leaderboard-list { flex: 1; overflow: auto; padding: 7px; }
 .leaderboard-message { padding: 28px 16px; color: #8b97b5; font-size: 13px; text-align: center; }
 .leaderboard-message.error { color: #ff9ba7; }

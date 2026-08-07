@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 米筐 RQData（rqdatac）数据源
-  - 覆盖中金所 CFFEX（可测 IM/IF/IC/IH，解决 iFinD 账号无权限问题）
+  - 覆盖期货与沪深指数（可测 IM/IF/IC/IH、000852.XSHG、000300.XSHG）
   - 代码自动转换：iFinD 风格 → 米筐风格
       rb8888.SHF → 主力连续（underlying='RB'，adjust_type='none' 直接拼接，贴近文华主连）
       IM2509.CFE → 具体合约 'IM2509'
@@ -34,21 +34,28 @@ class RicequantSource(DataSource):
 
     def futures_daily(self, symbol, start, end):
         import re
-        base = symbol.split(".")[0].upper()
-        m = re.fullmatch(r"([A-Z]+)(\d{3})", base)
-        if m:                                        # 郑商所3位年月码(CF609) → 米筐4位(CF2609)
-            base = f"{m.group(1)}2{m.group(2)}"
-        if base.endswith("8888"):                       # 主力连续
+        request_symbol = symbol.upper()
+        is_equity_index = request_symbol.endswith((".XSHG", ".XSHE"))
+        base = request_symbol.split(".")[0]
+        if not is_equity_index:
+            m = re.fullmatch(r"([A-Z]+)(\d{3})", base)
+            if m:                                    # 郑商所3位年月码(CF609) → 米筐4位(CF2609)
+                base = f"{m.group(1)}2{m.group(2)}"
+            request_symbol = base
+        if not is_equity_index and base.endswith("8888"):  # 主力连续
             df = self._rq.futures.get_dominant_price(
                 base[:-4], start_date=start, end_date=end,
                 frequency="1d", adjust_type="none")
-        else:                                           # 具体合约
+        else:                                           # 具体期货合约或指数
+            fields = ["open", "high", "low", "close", "volume"]
+            if not is_equity_index:
+                fields.append("open_interest")
             df = self._rq.get_price(
-                base, start_date=start, end_date=end, frequency="1d",
-                fields=["open", "high", "low", "close", "volume", "open_interest"],
+                request_symbol, start_date=start, end_date=end, frequency="1d",
+                fields=fields,
                 adjust_type="none", expect_df=True)
         if df is None or len(df) == 0:
-            raise RuntimeError(f"[米筐] 未取到 {symbol}（{base}）的数据，请检查合约代码或权限")
+            raise RuntimeError(f"[米筐] 未取到 {symbol}（{request_symbol}）的数据，请检查合约代码或权限")
         if isinstance(df.index, pd.MultiIndex):         # get_dominant_price 返回 (symbol, datetime) 多级索引
             df = df.reset_index()
             tcol = "datetime" if "datetime" in df.columns else "date"
@@ -56,6 +63,8 @@ class RicequantSource(DataSource):
         df.index = pd.to_datetime(df.index)
         df.index.name = "time"
         df = df.rename(columns={"open_interest": "ccl"})
+        if "ccl" not in df.columns:                 # 股票指数没有持仓量，策略图表以 0 占位
+            df["ccl"] = 0.0
         return df[["open", "high", "low", "close", "volume", "ccl"]].sort_index()
 
     def index_daily(self, symbol, start, end):

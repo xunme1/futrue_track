@@ -332,3 +332,15 @@ contracts:
   category: 股指
   exchange: CFFEX
   extra: true
+- symbol: 000852.XSHG
+  source: ricequant
+  name: 中证1000指数
+  category: 股指
+  exchange: SSE
+  extra: true
+- symbol: 000300.XSHG
+  source: ricequant
+  name: 沪深300指数
+  category: 股指
+  exchange: SSE
+  extra: true

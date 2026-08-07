@@ -108,6 +108,31 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(rows[0]["bucket"], "long_to_short_warning")
         self.assertEqual(rows[0]["bucket_name"], "多转空预警")
 
+    def test_trend_band_warnings_require_extreme_and_boundary_hold(self):
+        pressure = payload(close=100)
+        pressure["POS"][-1] = -1
+        pressure["KK"][-1], pressure["PP"][-1] = 95, 105
+        pressure["ohlc"][-1] = [99, 100, 98, 104]
+        self.assertEqual(len(screen_payload("pressure", pressure, CONTRACT)["short_pressure_warning"]), 1)
+
+        pressure_break = payload(close=106)
+        pressure_break["POS"][-1] = -1
+        pressure_break["KK"][-1], pressure_break["PP"][-1] = 95, 105
+        pressure_break["ohlc"][-1] = [100, 106, 99, 104]
+        self.assertFalse(screen_payload("pressure-break", pressure_break, CONTRACT)["short_pressure_warning"])
+
+        support = payload(close=100)
+        support["POS"][-1] = 1
+        support["EE"][-1], support["DD"][-1] = 95, 105
+        support["ohlc"][-1] = [99, 100, 97, 103]
+        self.assertEqual(len(screen_payload("support", support, CONTRACT)["long_support_warning"]), 1)
+
+        support_at_lower_edge = payload(close=95)
+        support_at_lower_edge["POS"][-1] = 1
+        support_at_lower_edge["EE"][-1], support_at_lower_edge["DD"][-1] = 95, 105
+        support_at_lower_edge["ohlc"][-1] = [96, 95, 95, 100]
+        self.assertFalse(screen_payload("support-at-lower-edge", support_at_lower_edge, CONTRACT)["long_support_warning"])
+
 
 if __name__ == "__main__":
     unittest.main()

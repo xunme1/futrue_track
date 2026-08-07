@@ -68,6 +68,8 @@ export type ScreeningBucket =
   | 'short_to_long'
   | 'long_to_short_warning'
   | 'short_to_long_warning'
+  | 'short_pressure_warning'
+  | 'long_support_warning'
 
 /** GET /api/screening 的榜单条目。 */
 export interface ScreeningItem {
