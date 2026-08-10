@@ -82,8 +82,8 @@
 
 | bucket | 含义 | 排序 |
 |---|---|---|
-| `long_trend` | 多头趋势：红 K、持多、收盘价不低于 EE | score 降序 |
-| `short_trend` | 空头趋势：蓝 K、持空、收盘价不高于 PP | score 升序 |
+| `long_trend` | 多头趋势：`POS=1`，不额外限制 K 线颜色或趋势带位置 | ATR14 降序 |
+| `short_trend` | 空头趋势：`POS=-1`，不额外限制 K 线颜色或趋势带位置 | ATR14 降序 |
 | `long_to_short` | 最近 8 根内多头转空，蓝 K 连续且跌破 EE | score 升序 |
 | `short_to_long` | 最近 8 根内空头转多，红 K 连续且突破 PP | score 降序 |
 

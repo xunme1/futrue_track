@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ubuntu 服务器日更入口：行情下载 → 信号计算 → 筛选榜单。
+# Ubuntu 服务器日更入口：行情下载 → 信号计算 → 筛选榜单（趋势榜单按 POS 筛选、ATR14 排序）。
 # 建议由 Cron 在工作日 17:30（Asia/Shanghai）调用：
 #   30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
 
@@ -54,6 +54,7 @@ fi
 
 "${PYTHON_BIN}" -m backend.pipeline.download
 "${PYTHON_BIN}" -m backend.pipeline.daily
+# 基于本次信号产物重新生成榜单；多空趋势按 POS 归类并按 ATR14 排序。
 "${PYTHON_BIN}" -m backend.pipeline.screen
 
 echo "===== $(date '+%F %T %Z') 日更完成 ====="

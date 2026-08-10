@@ -30,20 +30,22 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(atr[1], 2.5)  # (2 + 3) / 2
         self.assertEqual(atr[2], 2.25)  # (2.5 + 2) / 2
 
-    def test_main_trends_allow_boundary_equality_and_sort_by_score(self):
+    def test_main_trends_require_only_position(self):
         long_d = payload(close=100)
-        long_d["ohlc"][-1] = [110, 110, 109, 111]
-        long_d["PQ"][-1], long_d["POS"][-1], long_d["EE"][-1] = True, 1, 110
+        long_d["POS"][-1] = 1
+        long_d["PR"][-1] = True  # 蓝 K、且收盘落在趋势带外，仍应属于多头趋势。
+        long_d["EE"][-1] = 120
         short_d = payload(close=100)
-        short_d["ohlc"][-1] = [90, 90, 89, 91]
-        short_d["PR"][-1], short_d["POS"][-1], short_d["PP"][-1] = True, -1, 90
+        short_d["POS"][-1] = -1
+        short_d["PQ"][-1] = True  # 红 K、且收盘落在趋势带外，仍应属于空头趋势。
+        short_d["PP"][-1] = 80
 
         long_hits = screen_payload("long", long_d, CONTRACT)
         short_hits = screen_payload("short", short_d, CONTRACT)
         self.assertEqual(len(long_hits["long_trend"]), 1)
-        self.assertGreater(long_hits["long_trend"][0]["score"], 0)
+        self.assertTrue(long_hits["long_trend"][0]["PR"])
         self.assertEqual(len(short_hits["short_trend"]), 1)
-        self.assertLess(short_hits["short_trend"][0]["score"], 0)
+        self.assertTrue(short_hits["short_trend"][0]["PQ"])
 
     def test_transitions_require_first_target_bar_break_and_continuity(self):
         down = payload()
@@ -86,13 +88,13 @@ class ScreenTests(unittest.TestCase):
 
     def test_directional_sorting(self):
         results = {bucket: [] for bucket in BUCKETS}
-        results["long_trend"] = [{"score": 0.2}, {"score": 0.8}]
-        results["short_trend"] = [{"score": -0.2}, {"score": -1.1}]
+        results["long_trend"] = [{"atr14": 0.2}, {"atr14": 0.8}]
+        results["short_trend"] = [{"atr14": 0.2}, {"atr14": 1.1}]
         results["short_to_long"] = [{"score": 0.1}, {"score": 0.5}]
         results["long_to_short"] = [{"score": -0.1}, {"score": -0.7}]
         _sort_results(results)
-        self.assertEqual([item["score"] for item in results["long_trend"]], [0.8, 0.2])
-        self.assertEqual([item["score"] for item in results["short_trend"]], [-1.1, -0.2])
+        self.assertEqual([item["atr14"] for item in results["long_trend"]], [0.8, 0.2])
+        self.assertEqual([item["atr14"] for item in results["short_trend"]], [1.1, 0.2])
         self.assertEqual([item["score"] for item in results["short_to_long"]], [0.5, 0.1])
         self.assertEqual([item["score"] for item in results["long_to_short"]], [-0.7, -0.1])
 

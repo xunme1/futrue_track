@@ -216,10 +216,11 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     dd, ee, kk, pp = latest_item["DD"], latest_item["EE"], latest_item["KK"], latest_item["PP"]
     pos, color = latest_item["POS"], bar_color(payload, latest)
 
-    # 主筛：趋势带只在策略当前持仓方向一致时生效。
-    if pos == 1 and color == "red" and ee is not None and close >= ee:
+    # 主筛：只要策略处于对应持仓方向，即视为该方向趋势。
+    # K 线颜色及趋势带位置会持续变化，不再作为趋势榜单的额外门槛。
+    if pos == 1:
         result["long_trend"].append(latest_item)
-    if pos == -1 and color == "blue" and pp is not None and close <= pp:
+    if pos == -1:
         result["short_trend"].append(latest_item)
 
     # 原有预警：颜色已反向，但价格仍处于来源趋势带内，尚未突破离场边界。
@@ -266,8 +267,14 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
 
 
 def _sort_results(results):
+    # 趋势榜单按绝对波动强度排列；ATR 越大，排位越靠前。
+    for bucket in ("long_trend", "short_trend"):
+        results[bucket].sort(key=lambda item: item["atr14"], reverse=True)
+
     descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
+        if bucket in {"long_trend", "short_trend"}:
+            continue
         items.sort(key=lambda item: item["score"], reverse=bucket in descending)
 
 
@@ -308,6 +315,10 @@ def screen_contracts(contracts, json_dir=JSON_DIR, symbols=None, lookback=8, atr
             "atr_method": "wilder",
             "ma_window": 7,
             "score": "(close - MA7) / ATR14",
+            "main_trends": {
+                "long_trend": "POS=1; sorted by ATR14 descending",
+                "short_trend": "POS=-1; sorted by ATR14 descending",
+            },
             "trend_band_warnings": {
                 "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
                 "long_support_warning": "POS=1; EE<=low<=DD; EE<close<=DD",
@@ -361,7 +372,12 @@ def print_report(report):
             print("  无")
             continue
         for item in items:
-            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.3f}"
+            ranking = (
+                f"ATR14={item['atr14']:.4f}"
+                if bucket in {"long_trend", "short_trend"}
+                else f"score={item['score']:.3f}"
+            )
+            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} {ranking}"
             if "transition_date" in item:
                 line += f" 转折={item['transition_date']} {item['transition_from']}→{item['transition_to']}"
             print(line)

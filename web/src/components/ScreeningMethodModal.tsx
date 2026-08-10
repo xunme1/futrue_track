@@ -34,15 +34,15 @@ export default function ScreeningMethodModal({ open, onClose }: Props) {
         <table>
           <thead><tr><th>类别</th><th>命中条件</th><th>排序</th></tr></thead>
           <tbody>
-            <tr><td>多头趋势</td><td>POS=1、最新 K 为红 K（PQ=true）、收盘价 ≥ EE</td><td>score 降序，越大越强</td></tr>
-            <tr><td>空头趋势</td><td>POS=-1、最新 K 为蓝 K（PR=true）、收盘价 ≤ PP</td><td>score 升序，越小越强</td></tr>
+            <tr><td>多头趋势</td><td>POS=1（不额外限制 K 线颜色或趋势带位置）</td><td>ATR14 降序，波动越大越靠前</td></tr>
+            <tr><td>空头趋势</td><td>POS=-1（不额外限制 K 线颜色或趋势带位置）</td><td>ATR14 降序，波动越大越靠前</td></tr>
             <tr><td>多转空</td><td>最近 8 根内由红 K 直接转为首根蓝 K；该根收盘价 &lt; EE；转折前为持多，之后蓝 K 连续至少 1 根，且最新 K 仍为蓝 K</td><td>按最新 score 升序</td></tr>
             <tr><td>空转多</td><td>最近 8 根内由蓝 K 直接转为首根红 K；该根收盘价 &gt; PP；转折前为持空，之后红 K 连续至少 1 根，且最新 K 仍为红 K</td><td>按最新 score 降序</td></tr>
           </tbody>
         </table>
 
         <h3>边界与颜色说明</h3>
-        <p>DD–EE 是多头趋势带，EE 为下边界；KK–PP 是空头趋势带，PP 为上边界。主筛允许收盘价恰好落在对应边界上；转换筛要求严格突破。灰 K 不计入转换的目标色连续段。</p>
+        <p>DD–EE 是多头趋势带，EE 为下边界；KK–PP 是空头趋势带，PP 为上边界。趋势主筛只看 POS；转换筛要求严格突破。灰 K 不计入转换的目标色连续段。</p>
         <h3>榜单预警类别</h3>
         <ul>
           <li><b>压力回踩</b>：持空时，最高价与收盘价均在 KK–PP 压力带内，收盘未上破 PP；表示压力仍有效，需留意反弹后的方向选择。</li>

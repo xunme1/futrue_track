@@ -30,6 +30,10 @@ function scoreText(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : '—'
 }
 
+function atrText(value: number): string {
+  return Number.isFinite(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
+}
+
 function closeText(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
 }
@@ -40,6 +44,7 @@ export default function Leaderboard({
 }: Props) {
   const items = report?.buckets[bucket] ?? []
   const activeMeta = LEADERBOARD_BUCKETS.find((item) => item.key === bucket)
+  const isTrendBucket = bucket === 'long_trend' || bucket === 'short_trend'
 
   return (
     <aside className={`leaderboard${drawer ? ' leaderboard-drawer' : ''}`} aria-label="筛选榜单">
@@ -108,7 +113,9 @@ export default function Leaderboard({
               {item.transition_date && <em>转折 {item.transition_date}</em>}
             </span>
             <span className="leaderboard-values">
-              <b className={item.score >= 0 ? 'score-up' : 'score-down'}>{scoreText(item.score)}</b>
+              {isTrendBucket
+                ? <b>ATR {atrText(item.atr14)}</b>
+                : <b className={item.score >= 0 ? 'score-up' : 'score-down'}>{scoreText(item.score)}</b>}
               <small>收 {closeText(item.close)}</small>
             </span>
           </button>
