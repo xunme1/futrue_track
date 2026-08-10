@@ -267,14 +267,9 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
 
 
 def _sort_results(results):
-    # 趋势榜单按绝对波动强度排列；ATR 越大，排位越靠前。
-    for bucket in ("long_trend", "short_trend"):
-        results[bucket].sort(key=lambda item: item["atr14"], reverse=True)
-
+    # 趋势榜单按均线偏离的 ATR 标准化分数排列；多头越大越强、空头越小越强。
     descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
-        if bucket in {"long_trend", "short_trend"}:
-            continue
         items.sort(key=lambda item: item["score"], reverse=bucket in descending)
 
 
@@ -316,8 +311,8 @@ def screen_contracts(contracts, json_dir=JSON_DIR, symbols=None, lookback=8, atr
             "ma_window": 7,
             "score": "(close - MA7) / ATR14",
             "main_trends": {
-                "long_trend": "POS=1; sorted by ATR14 descending",
-                "short_trend": "POS=-1; sorted by ATR14 descending",
+                "long_trend": "POS=1; sorted by score descending",
+                "short_trend": "POS=-1; sorted by score ascending",
             },
             "trend_band_warnings": {
                 "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
@@ -372,12 +367,7 @@ def print_report(report):
             print("  无")
             continue
         for item in items:
-            ranking = (
-                f"ATR14={item['atr14']:.4f}"
-                if bucket in {"long_trend", "short_trend"}
-                else f"score={item['score']:.3f}"
-            )
-            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} {ranking}"
+            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.3f}"
             if "transition_date" in item:
                 line += f" 转折={item['transition_date']} {item['transition_from']}→{item['transition_to']}"
             print(line)

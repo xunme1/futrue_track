@@ -88,13 +88,13 @@ class ScreenTests(unittest.TestCase):
 
     def test_directional_sorting(self):
         results = {bucket: [] for bucket in BUCKETS}
-        results["long_trend"] = [{"atr14": 0.2}, {"atr14": 0.8}]
-        results["short_trend"] = [{"atr14": 0.2}, {"atr14": 1.1}]
+        results["long_trend"] = [{"score": 0.2}, {"score": 0.8}]
+        results["short_trend"] = [{"score": -0.2}, {"score": -1.1}]
         results["short_to_long"] = [{"score": 0.1}, {"score": 0.5}]
         results["long_to_short"] = [{"score": -0.1}, {"score": -0.7}]
         _sort_results(results)
-        self.assertEqual([item["atr14"] for item in results["long_trend"]], [0.8, 0.2])
-        self.assertEqual([item["atr14"] for item in results["short_trend"]], [1.1, 0.2])
+        self.assertEqual([item["score"] for item in results["long_trend"]], [0.8, 0.2])
+        self.assertEqual([item["score"] for item in results["short_trend"]], [-1.1, -0.2])
         self.assertEqual([item["score"] for item in results["short_to_long"]], [0.5, 0.1])
         self.assertEqual([item["score"] for item in results["long_to_short"]], [-0.7, -0.1])
 

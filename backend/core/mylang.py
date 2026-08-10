@@ -10,6 +10,8 @@ import pandas as pd
 
 def hhv(s, n):  return s.rolling(n, min_periods=n).max()      # HHV(X,N) 最高值
 def llv(s, n):  return s.rolling(n, min_periods=n).min()      # LLV(X,N) 最低值
+def hv(s, n):   return s.shift(1).rolling(n, min_periods=n).max()  # HV(X,N) 前 N 根最高值（不含当前）
+def lv(s, n):   return s.shift(1).rolling(n, min_periods=n).min()  # LV(X,N) 前 N 根最低值（不含当前）
 def ma(s, n):   return s.rolling(n, min_periods=n).mean()     # MA(X,N) 均线
 def ref(s, n):  return s.shift(n)                             # REF(X,N) 前N根值
 

@@ -34,8 +34,8 @@ export default function ScreeningMethodModal({ open, onClose }: Props) {
         <table>
           <thead><tr><th>类别</th><th>命中条件</th><th>排序</th></tr></thead>
           <tbody>
-            <tr><td>多头趋势</td><td>POS=1（不额外限制 K 线颜色或趋势带位置）</td><td>ATR14 降序，波动越大越靠前</td></tr>
-            <tr><td>空头趋势</td><td>POS=-1（不额外限制 K 线颜色或趋势带位置）</td><td>ATR14 降序，波动越大越靠前</td></tr>
+            <tr><td>多头趋势</td><td>POS=1（不额外限制 K 线颜色或趋势带位置）</td><td>score 降序，越大越强</td></tr>
+            <tr><td>空头趋势</td><td>POS=-1（不额外限制 K 线颜色或趋势带位置）</td><td>score 升序，越小越强</td></tr>
             <tr><td>多转空</td><td>最近 8 根内由红 K 直接转为首根蓝 K；该根收盘价 &lt; EE；转折前为持多，之后蓝 K 连续至少 1 根，且最新 K 仍为蓝 K</td><td>按最新 score 升序</td></tr>
             <tr><td>空转多</td><td>最近 8 根内由蓝 K 直接转为首根红 K；该根收盘价 &gt; PP；转折前为持空，之后红 K 连续至少 1 根，且最新 K 仍为红 K</td><td>按最新 score 降序</td></tr>
           </tbody>

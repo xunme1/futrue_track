@@ -10,7 +10,7 @@ import math
 
 import pandas as pd
 
-from ..core.mylang import (every, hhv, hhvbars, intpart, llv, llvbars, ma,
+from ..core.mylang import (every, hhv, hhvbars, hv, intpart, llv, llvbars, lv, ma,
                            ref, sma_cn)
 
 STRATEGY_NAME = "zxgl_xdd"
@@ -138,18 +138,19 @@ def compute(fut_d, fut_w, idx_d, p):
     Kk = sma_cn(RSV.fillna(50), 3, 1)
     Dd = sma_cn(Kk, 3, 1)
     XX = (OPI >= (1 + p["opi_surge_pct"]) * ref(OPI, 1)) & (C > (1 + p["price_confirm_pct"]) * ref(C, 1))
-    II = (OPI >= (1 + p["opi_surge_pct"]) * ref(OPI, 2)) & (ref(OPI, 1) > ref(OPI, 2)) & (C > hhv(C, 2)) & (C > 1.015 * L)
+    # 麦语言 HV/LV 不含当前 K；不可用 HHV/LLV 代替，否则 C > HHV(C, 2) 永不成立。
+    II = (OPI >= (1 + p["opi_surge_pct"]) * ref(OPI, 2)) & (ref(OPI, 1) > ref(OPI, 2)) & (C > hv(C, 2)) & (C > 1.015 * L)
     ZC = ((OPI >= (1 + p["opi_super_pct"]) * ref(OPI, 1)) | ((OPI - ref(OPI, 1)) > p["opi_super_abs"])) & (C > (1 + p["price_confirm_pct"]) * ref(C, 1))
     KC = (XX | II) & ((Kk > Dd) | (Dd - Kk < 8)) & (Kk < 85)
     first_kc = ref(every(KC == 0, 4), 1).astype("boolean").fillna(False)
     df["SB"] = (KC & first_kc) | ZC                                                   # 多头增仓（近5根首次）
     body_hi, body_lo = pd.concat([O, C], axis=1).max(axis=1), pd.concat([O, C], axis=1).min(axis=1)
-    AA_ = (C > hhv(body_hi, 2) - (hhv(body_hi, 2) - llv(body_lo, 2)) / 3) & (ref(C, 2) < ref(O, 2)) & (C - L > 0.015 * L)
+    AA_ = (C > hv(body_hi, 2) - (hv(body_hi, 2) - lv(body_lo, 2)) / 3) & (ref(C, 2) < ref(O, 2)) & (C - L > 0.015 * L)
     BB_ = (OPI - ref(OPI, 1)).abs() + (ref(OPI, 2) - ref(OPI, 1)).abs() > p["wash_pct"] * pd.concat([ref(OPI, 1), ref(OPI, 2)], axis=1).min(axis=1)
     CC_ = AA_ & BB_
     first_cc = ref(every(CC_ == 0, 3), 1).astype("boolean").fillna(False)
     df["DSB"] = CC_ & first_cc & (C < hhv(C, 10))                                    # 洗盘后站起来
-    AAE = (C < llv(body_lo, 2) + (hhv(body_hi, 2) - llv(body_lo, 2)) / 3) & (ref(C, 2) > ref(O, 2)) & (hhv(body_hi, 3) - llv(body_lo, 3) > 0.02 * L) & (C < O)
+    AAE = (C < lv(body_lo, 2) + (hv(body_hi, 2) - lv(body_lo, 2)) / 3) & (ref(C, 2) > ref(O, 2)) & (hhv(body_hi, 3) - llv(body_lo, 3) > 0.02 * L) & (C < O)
     BBE = BB_
     KKE = (OPI - ref(OPI, 1)).abs() + (ref(OPI, 2) - ref(OPI, 1)).abs() + (ref(OPI, 2) - ref(OPI, 3)).abs() > p["wash_hard_pct"] * pd.concat([ref(OPI, 1), ref(OPI, 2)], axis=1).min(axis=1)
     CCE = AAE & (BBE | KKE)
