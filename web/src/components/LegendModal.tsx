@@ -1,8 +1,10 @@
 import { useEffect } from 'react'
+import type { Timeframe } from '../types'
 
 interface Props {
   open: boolean
   onClose: () => void
+  timeframe: Timeframe
 }
 
 interface TagSpec { text: string; bg?: string; color?: string }
@@ -191,7 +193,7 @@ function Cell({ content }: { content: string | TagSpec[] }) {
 }
 
 /** 信号解读文档弹窗：右上角按钮打开，Esc / 点遮罩关闭 */
-export default function LegendModal({ open, onClose }: Props) {
+export default function LegendModal({ open, onClose, timeframe }: Props) {
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -205,11 +207,13 @@ export default function LegendModal({ open, onClose }: Props) {
     <div className="modal-mask" onClick={onClose}>
       <div className="modal-panel legend-doc" onClick={(e) => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
-        <h2>看板标记详解（文华麦语言策略复刻）</h2>
+        <h2>{timeframe === '4h' ? '4 小时看板标记详解' : '看板标记详解（文华麦语言策略复刻）'}</h2>
         <div className="legend-intro">
-          策略逻辑一句话：周线定方向 → M头/W底形态突破进场 → 盘整过滤避震荡 → 对比南华商品指数看强弱 → 持仓量验证资金。鼠标悬停任意 K 线可查看当日全部状态。
+          {timeframe === '4h'
+            ? '策略逻辑：上一已完成日线定方向 → 4小时 M头/W底形态突破进场 → 盘整过滤 → 持仓量验证资金。红 K 为上涨、蓝 K 为下跌；不含南华指数强弱对比。'
+            : '策略逻辑一句话：周线定方向 → M头/W底形态突破进场 → 盘整过滤避震荡 → 对比南华商品指数看强弱 → 持仓量验证资金。鼠标悬停任意 K 线可查看当日全部状态。'}
         </div>
-        {SECTIONS.map((sec) => (
+        {(timeframe === '4h' ? SECTIONS.filter((sec) => !sec.title.startsWith('一、') && !sec.title.startsWith('五、')) : SECTIONS).map((sec) => (
           <section key={sec.title}>
             <h3>{sec.title}</h3>
             <table>
@@ -229,9 +233,7 @@ export default function LegendModal({ open, onClose }: Props) {
             {sec.note && <div className="legend-note">{sec.note}</div>}
           </section>
         ))}
-        <div className="legend-footer">
-          数据：米筐 RQData（期货全品种）+ 同花顺 iFinD（南华商品指数 NHCI.SL） · 基准指数已由原脚本的文华商品指数(7186)替换为南华商品指数 · 本看板为测试阶段产物
-        </div>
+        <div className="legend-footer">{timeframe === '4h' ? '数据：米筐 RQData 240 分钟期货行情；信号仅使用已收线 K。' : '数据：米筐 RQData（期货全品种）+ 同花顺 iFinD（南华商品指数 NHCI.SL） · 本看板为测试阶段产物'}</div>
       </div>
     </div>
   )

@@ -20,6 +20,10 @@ button { font: inherit; }
   border-bottom: 1px solid #232d45;
 }
 .brand { margin-right: 4px; white-space: nowrap; }
+.timeframe-switch { display: inline-flex; overflow: hidden; border: 1px solid #35436b; border-radius: 6px; }
+.timeframe-switch button { padding: 5px 9px; color: #9fb2d8; background: transparent; border: 0; cursor: pointer; font-size: 13px; }
+.timeframe-switch button + button { border-left: 1px solid #35436b; }
+.timeframe-switch button.active { color: #fff; background: #c93a3a; }
 .active-symbol { color: #9fb2d8; font-size: 14px; white-space: nowrap; }
 .leaderboard-toggle { display: none; }
 

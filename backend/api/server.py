@@ -13,36 +13,37 @@
     GET /                        前端看板（frontend/ 静态目录）
 """
 import json
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..core.config import DATA_DIR, JSON_DIR, PROJECT_ROOT, load_contracts
+from ..core.config import PROJECT_ROOT, load_contracts
+from ..core.timeframes import json_dir, screening_file
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
-SCREENING_FILE = DATA_DIR / "screening" / "latest.json"
-
 app = FastAPI(title="期货指标监测 API", version="0.2.0")
 
 
-def _load_payload(key: str) -> dict:
-    fp = JSON_DIR / f"{key}.json"
+def _load_payload(key: str, timeframe: str) -> dict:
+    fp = json_dir(timeframe) / f"{key}.json"
     if not fp.exists():
         return None
     with open(fp, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _load_screening() -> dict:
+def _load_screening(timeframe: str) -> dict:
     """读取最新筛选报告；报告由 backend.pipeline.screen 生成。"""
-    if not SCREENING_FILE.exists():
+    report_file = screening_file(timeframe)
+    if not report_file.exists():
         raise HTTPException(
             status_code=404,
             detail="筛选报告不存在，请先运行 python -m backend.pipeline.screen",
         )
     try:
-        with open(SCREENING_FILE, encoding="utf-8") as f:
+        with open(report_file, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail=f"筛选报告读取失败: {exc}") from exc
@@ -54,7 +55,7 @@ def health():
 
 
 @app.get("/api/contracts")
-def contracts():
+def contracts(timeframe: Literal["1d", "4h"] = Query("1d")):
     """合约池元数据：前端构建品种选择器（按类别分组）用"""
     out = []
     for e in load_contracts():
@@ -67,16 +68,16 @@ def contracts():
             "exchange": e.get("exchange", ""),
             "source": e.get("source", ""),
             "extra": bool(e.get("extra", False)),
-            "has_data": (JSON_DIR / f"{key}.json").exists(),
+            "has_data": (json_dir(timeframe) / f"{key}.json").exists(),
         })
     return out
 
 
 @app.get("/api/symbols")
-def symbols():
+def symbols(timeframe: Literal["1d", "4h"] = Query("1d")):
     """已有计算产物的品种列表（含 K 线根数、最后日期、最新一个交易信号）"""
     out = []
-    for fp in sorted(JSON_DIR.glob("*.json")):
+    for fp in sorted(json_dir(timeframe).glob("*.json")):
         with open(fp, encoding="utf-8") as f:
             d = json.load(f)
         sigs = d.get("signals") or []
@@ -96,15 +97,15 @@ def symbols():
 
 
 @app.get("/api/screening")
-def screening():
+def screening(timeframe: Literal["1d", "4h"] = Query("1d")):
     """最新筛选榜单报告（四类主筛 + 两类预警）。"""
-    return _load_screening()
+    return _load_screening(timeframe)
 
 
 @app.get("/api/signals/{key}")
-def signals(key: str):
+def signals(key: str, timeframe: Literal["1d", "4h"] = Query("1d")):
     """某品种完整看板数据。字段说明见 docs/api.md"""
-    d = _load_payload(key)
+    d = _load_payload(key, timeframe)
     if d is None:
         raise HTTPException(status_code=404, detail=f"品种 '{key}' 无数据，请先运行 download + daily 流水线")
     return d

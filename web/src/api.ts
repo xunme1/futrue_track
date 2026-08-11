@@ -1,4 +1,4 @@
-import type { ContractInfo, ScreeningReport, SignalData } from './types'
+import type { ContractInfo, ScreeningReport, SignalData, Timeframe } from './types'
 
 async function getJson<T>(url: string): Promise<T> {
   const resp = await fetch(url)
@@ -10,16 +10,20 @@ async function getJson<T>(url: string): Promise<T> {
 }
 
 /** 合约池元数据（品种选择器数据源） */
-export function fetchContracts(): Promise<ContractInfo[]> {
-  return getJson<ContractInfo[]>('/api/contracts')
+function timeframeQuery(timeframe: Timeframe): string {
+  return timeframe === '1d' ? '' : '?timeframe=4h'
+}
+
+export function fetchContracts(timeframe: Timeframe): Promise<ContractInfo[]> {
+  return getJson<ContractInfo[]>(`/api/contracts${timeframeQuery(timeframe)}`)
 }
 
 /** 某品种完整图表数据 */
-export function fetchSignals(key: string): Promise<SignalData> {
-  return getJson<SignalData>(`/api/signals/${encodeURIComponent(key)}`)
+export function fetchSignals(key: string, timeframe: Timeframe): Promise<SignalData> {
+  return getJson<SignalData>(`/api/signals/${encodeURIComponent(key)}${timeframeQuery(timeframe)}`)
 }
 
 /** 最新本地筛选报告（由 backend.pipeline.screen 生成）。 */
-export function fetchScreening(): Promise<ScreeningReport> {
-  return getJson<ScreeningReport>('/api/screening')
+export function fetchScreening(timeframe: Timeframe): Promise<ScreeningReport> {
+  return getJson<ScreeningReport>(`/api/screening${timeframeQuery(timeframe)}`)
 }

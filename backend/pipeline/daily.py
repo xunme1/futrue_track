@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-每日计算流水线（CLI 入口，纯本地数据）
-  数据全部来自本地行情库（data/store/），不连接数据源；
-  请先用 python -m backend.pipeline.download 更新本地库。
-  用法：
-    python -m backend.pipeline.daily                          # watchlist 全部品种
-    python -m backend.pipeline.daily --symbols sc2609.INE     # 指定品种
-    python -m backend.pipeline.daily --strategy zxgl_xdd      # 指定策略（默认读注册表）
-  产物：
-    data/json/{品种}.json        看板数据（K线+信号+通道）
-    data/csv/signals_{品种}.csv  逐 bar 信号明细
-"""
+"""Local calculation pipeline for the daily and 4-hour dashboards."""
 import argparse
 import json
 import math
@@ -19,18 +8,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.core.config import CFG, load_contracts, PARAMS, CSV_DIR, JSON_DIR
+from backend.core.config import CFG, load_contracts, PARAMS
 from backend.core.store import Store
+from backend.core.timeframes import csv_dir, json_dir
 from backend.datasource import INDEX_SOURCE
 from backend.strategy import DEFAULT_STRATEGY, get_strategy
 
-EXPORT_COLS = ["open", "high", "low", "close", "volume", "ccl", "PQ", "PR", "NN", "GG",
-               "AA1", "ZZ1", "TT1", "PANZHENG", "KK", "PP", "DD", "EE",
-               "SIGNAL", "POS", "SB", "DSB", "DSBE", "DSBE_NOTE"]
+DAILY_EXPORT_COLS = ["open", "high", "low", "close", "volume", "ccl", "PQ", "PR", "NN", "GG",
+                     "AA1", "ZZ1", "TT1", "PANZHENG", "KK", "PP", "DD", "EE",
+                     "SIGNAL", "POS", "SB", "DSB", "DSBE", "DSBE_NOTE"]
+FOUR_HOUR_EXPORT_COLS = ["open", "high", "low", "close", "volume", "ccl", "trading_date", "BAR_COLOR",
+                         "AA1", "ZZ1", "TT1", "PANZHENG", "KK", "PP", "DD", "EE",
+                         "SIGNAL", "POS", "SB", "DSB", "DSBE", "DSBE_NOTE"]
 
 
 def _json_safe(value):
-    """将 Pandas/策略计算中的 NaN、无穷值递归替换为标准 JSON null。"""
     if isinstance(value, dict):
         return {key: _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -40,79 +32,97 @@ def _json_safe(value):
     return value
 
 
-def build_payload(symbol, df):
-    """把策略结果转换成前端 API 契约，便于独立测试。"""
+def _nullable(df, column):
+    return df[column].where(df[column].notna(), None).tolist()
+
+
+def build_payload(symbol, df, timeframe="1d"):
+    """Convert strategy output into the dashboard wire format."""
     payload = {
         "symbol": symbol,
-        "dates": df.index.strftime("%Y-%m-%d").tolist(),
-        "ohlc": df[["open", "close", "low", "high"]].round(4).values.tolist(),  # ECharts 顺序 O C L H
+        "timeframe": timeframe,
+        "dates": df.index.strftime("%Y-%m-%d %H:%M" if timeframe == "4h" else "%Y-%m-%d").tolist(),
+        "ohlc": df[["open", "close", "low", "high"]].round(4).values.tolist(),
         "volume": df["volume"].fillna(0).tolist(),
         "opi": df["ccl"].fillna(0).tolist(),
-        "PQ": df["PQ"].fillna(False).tolist(),
-        "PR": df["PR"].fillna(False).tolist(),
-        "NN": df["NN"].where(df["NN"].notna(), None).tolist(),
-        "GG": df["GG"].where(df["GG"].notna(), None).tolist(),
         "signals": [{"i": i, "type": s, "price": float(df["low"].iloc[i]) if s in ("BK", "BP") else float(df["high"].iloc[i])}
                     for i, s in enumerate(df["SIGNAL"]) if s],
         "SB": df["SB"].fillna(False).tolist(),
         "DSB": df["DSB"].fillna(False).tolist(),
-        "AA1": df["AA1"].tolist(),
-        "ZZ1": df["ZZ1"].tolist(),
-        "TT1": df["TT1"].tolist(),
+        "AA1": df["AA1"].fillna(False).tolist(),
+        "ZZ1": df["ZZ1"].fillna(False).tolist(),
+        "TT1": df["TT1"].fillna(False).tolist(),
         "DSBE": df["DSBE"].fillna(False).tolist(),
-        "DSBE_NOTE": [note if isinstance(note, str) and note else None
-                      for note in df["DSBE_NOTE"]],
-        "KK": df["KK"].where(df["KK"].notna(), None).tolist(),
-        "PP": df["PP"].where(df["PP"].notna(), None).tolist(),
-        "DD": df["DD"].where(df["DD"].notna(), None).tolist(),
-        "EE": df["EE"].where(df["EE"].notna(), None).tolist(),
-        "POS": df["POS"].tolist(),
-        "ZD": df["ZD"].where(df["ZD"].notna(), None).tolist(),
+        "DSBE_NOTE": [note if isinstance(note, str) and note else None for note in df["DSBE_NOTE"]],
+        "KK": _nullable(df, "KK"), "PP": _nullable(df, "PP"),
+        "DD": _nullable(df, "DD"), "EE": _nullable(df, "EE"),
+        "POS": df["POS"].tolist(), "ZD": _nullable(df, "ZD"),
     }
+    if timeframe == "1d":
+        payload.update({
+            "PQ": df["PQ"].fillna(False).tolist(), "PR": df["PR"].fillna(False).tolist(),
+            "NN": _nullable(df, "NN"), "GG": _nullable(df, "GG"),
+        })
+    else:
+        payload["bar_colors"] = df["BAR_COLOR"].fillna("gray").tolist()
     return _json_safe(payload)
 
 
-def export(symbol, df):
-    """导出看板 JSON + 信号 CSV"""
+def export(symbol, df, timeframe="1d"):
+    """Export a timeframe's dashboard JSON and per-bar signal CSV."""
     key = symbol.split(".")[0]
-    df[EXPORT_COLS].to_csv(CSV_DIR / f"signals_{key}.csv", encoding="utf-8-sig")
-    payload = build_payload(symbol, df)
-    with open(JSON_DIR / f"{key}.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, allow_nan=False)
-    n_sig = df["SIGNAL"].ne("").sum()
-    counts = {name: int(count) for name, count in
-              df["SIGNAL"][df["SIGNAL"].ne("")].value_counts().items()}
-    print(f"  [{symbol}] {len(df)} 根日K，交易信号 {int(n_sig)} 个：{counts}")
+    target_csv, target_json = csv_dir(timeframe), json_dir(timeframe)
+    target_csv.mkdir(parents=True, exist_ok=True)
+    target_json.mkdir(parents=True, exist_ok=True)
+    cols = DAILY_EXPORT_COLS if timeframe == "1d" else FOUR_HOUR_EXPORT_COLS
+    df[[column for column in cols if column in df.columns]].to_csv(target_csv / f"signals_{key}.csv", encoding="utf-8-sig")
+    with open(target_json / f"{key}.json", "w", encoding="utf-8") as f:
+        json.dump(build_payload(symbol, df, timeframe), f, ensure_ascii=False, allow_nan=False)
+    counts = {name: int(count) for name, count in df["SIGNAL"][df["SIGNAL"].ne("")].value_counts().items()}
+    print(f"  [{symbol}] {len(df)} 根{timeframe}K，交易信号 {int(df['SIGNAL'].ne('').sum())} 个：{counts}")
+
+
+def _watchlist(symbols):
+    watchlist = load_contracts()
+    if not symbols:
+        return watchlist
+    selected = [entry for entry in watchlist if entry["symbol"] in symbols]
+    missing = set(symbols) - {entry["symbol"] for entry in selected}
+    if missing:
+        raise SystemExit(f"{missing} 不在合约池 config/contracts.yaml 中，请先添加")
+    return selected
+
+
+def _run_daily(store, watchlist, start, strategy_name):
+    strategy = get_strategy(strategy_name)
+    idx_d = store.read(INDEX_SOURCE, "index_daily", CFG["symbols"]["index"])
+    for entry in watchlist:
+        symbol, source = entry["symbol"], entry["source"]
+        df = strategy.compute(store.read(source, "futures_daily", symbol), store.read(source, "futures_weekly", symbol), idx_d, PARAMS)
+        export(symbol, df.loc[start:], "1d")
+
+
+def _run_4h(store, watchlist, start):
+    strategy = get_strategy("zxgl_4h")
+    for entry in watchlist:
+        symbol, source = entry["symbol"], entry["source"]
+        bars = store.read(source, "futures_4h", symbol)
+        daily = store.read(source, "futures_daily", symbol)
+        df = strategy.compute(bars, daily, PARAMS)
+        export(symbol, df.loc[start:], "4h")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="期货指标监测 · 每日计算流水线（本地数据）")
-    ap.add_argument("--symbols", nargs="+", default=None, help="只算这些品种（默认合约池全部）")
-    ap.add_argument("--strategy", default=DEFAULT_STRATEGY)
-    args = ap.parse_args()
-    strategy = get_strategy(args.strategy)
-
-    watchlist = load_contracts()
-    if args.symbols:
-        watchlist = [e for e in watchlist if e["symbol"] in args.symbols]
-        missing = set(args.symbols) - {e["symbol"] for e in watchlist}
-        if missing:
-            raise SystemExit(f"{missing} 不在合约池 config/contracts.yaml 中，请先添加")
-
-    start = CFG["data"]["start_date"]
-    store = Store()
-    idx_sym = CFG["symbols"]["index"]
-    idx_d = store.read(INDEX_SOURCE, "index_daily", idx_sym)      # 指数固定 iFinD 本地库
-
-    print(f"[启动] 策略={strategy.STRATEGY_NAME} 数据=本地行情库 起始={start}（终点=库内最新）")
-    for entry in watchlist:
-        sym, source = entry["symbol"], entry["source"]
-        d = store.read(source, "futures_daily", sym)
-        w = store.read(source, "futures_weekly", sym)
-        df = strategy.compute(d, w, idx_d, PARAMS)
-        df = df.loc[start:]                            # 裁掉预热段，终点跟随库内最新数据
-        export(sym, df)
-    print(f"[完成] 产物：{JSON_DIR}  {CSV_DIR}")
+    parser = argparse.ArgumentParser(description="期货指标监测 · 本地计算流水线")
+    parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--strategy", default=DEFAULT_STRATEGY, help="仅日线可指定策略")
+    parser.add_argument("--timeframe", choices=("1d", "4h", "all"), default="1d")
+    args = parser.parse_args()
+    watchlist, store, start = _watchlist(args.symbols), Store(), CFG["data"]["start_date"]
+    if args.timeframe in ("1d", "all"):
+        _run_daily(store, watchlist, start, args.strategy)
+    if args.timeframe in ("4h", "all"):
+        _run_4h(store, watchlist, start)
 
 
 if __name__ == "__main__":

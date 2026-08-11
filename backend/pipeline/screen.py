@@ -16,7 +16,8 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-from backend.core.config import DATA_DIR, JSON_DIR, load_contracts
+from backend.core.config import load_contracts
+from backend.core.timeframes import json_dir as timeframe_json_dir, output_dir
 
 
 BUCKETS = (
@@ -108,6 +109,9 @@ def moving_average(values, window=7):
 
 def bar_color(payload, index):
     """返回 red / blue / None；红蓝同时为真时视为无效。"""
+    colors = payload.get("bar_colors")
+    if colors is not None:
+        return colors[index] if colors[index] in ("red", "blue") else None
     pq = bool(payload["PQ"][index])
     pr = bool(payload["PR"][index])
     if pq == pr:
@@ -116,8 +120,10 @@ def bar_color(payload, index):
 
 
 def _payload_is_usable(payload):
-    required = ("dates", "ohlc", "PQ", "PR", "POS", "DD", "EE", "KK", "PP")
+    required = ("dates", "ohlc", "POS", "DD", "EE", "KK", "PP")
     if any(key not in payload for key in required):
+        return False
+    if "bar_colors" not in payload and ("PQ" not in payload or "PR" not in payload):
         return False
     size = len(payload["dates"])
     return size > 0 and all(len(payload[key]) == size for key in required if key != "dates")
@@ -152,14 +158,17 @@ def _make_item(key, payload, contract, index, ma7, atr14, **extra):
         "ma7": ma7,
         "atr14": atr14,
         "score": score,
-        "PQ": bool(payload["PQ"][index]),
-        "PR": bool(payload["PR"][index]),
         "POS": payload["POS"][index],
         "DD": _number(payload["DD"][index]),
         "EE": _number(payload["EE"][index]),
         "KK": _number(payload["KK"][index]),
         "PP": _number(payload["PP"][index]),
     }
+    if "PQ" in payload:
+        item["PQ"] = bool(payload["PQ"][index])
+        item["PR"] = bool(payload["PR"][index])
+    if "bar_colors" in payload:
+        item["bar_color"] = payload["bar_colors"][index]
     item.update(extra)
     return item
 
@@ -192,6 +201,60 @@ def _transition(payload, target, source_pos, boundary_key, comparator, lookback)
     if transition_close is None or boundary is None or not comparator(transition_close, boundary):
         return None
     return start, transition_close, boundary
+
+
+def _recent_band(payload, source_pos, boundary_key, window=9):
+    """Find the newest visible trend band in the current nine-bar window.
+
+    Channels are calculated for every bar, but a pressure/support *band* is
+    visible only while the strategy was holding the corresponding direction.
+    """
+    n = len(payload["dates"])
+    for index in range(n - 1, max(-1, n - window - 1), -1):
+        boundary = _number(payload[boundary_key][index])
+        if payload["POS"][index] == source_pos and boundary is not None:
+            return index, boundary
+    return None
+
+
+def _four_hour_transition(payload, target):
+    """Evaluate the configured four-hour reversal signal and enhancement stars."""
+    n, latest = len(payload["dates"]), len(payload["dates"]) - 1
+    close = _close(payload, latest)
+    if close is None or bar_color(payload, latest) != target:
+        return None
+
+    # 空转多：最近9根有空头压力带，当前上涨红K收于压力带上方。
+    if target == "red":
+        band = _recent_band(payload, -1, "PP")
+        if band is None or close <= band[1]:
+            return None
+        prior_color, funding, label, boundary_key = "blue", "SB", "空转多", "PP"
+        reasons = ("前8根含偏弱K", "前8根含增仓笑脸")
+    # 多转空：最近9根有多头支撑带，当前下跌蓝K收于支撑带下方。
+    else:
+        band = _recent_band(payload, 1, "EE")
+        if band is None or close >= band[1]:
+            return None
+        prior_color, funding, label, boundary_key = "red", "DSBE", "多转空", "EE"
+        reasons = ("前8根含偏强K", "前8根含减仓倒手指")
+
+    prior_start = max(0, latest - 8)
+    prior_indices = range(prior_start, latest)  # excludes the current confirming bar
+    flags = [
+        any(bar_color(payload, i) == prior_color for i in prior_indices),
+        any(bool(payload.get(funding, [False] * n)[i]) for i in prior_indices),
+    ]
+    star_reasons = [reason for enabled, reason in zip(flags, reasons) if enabled]
+    return {
+        "signal_name": label,
+        "signal_date": payload["dates"][latest],
+        "trend_band_date": payload["dates"][band[0]],
+        "transition_boundary": boundary_key,
+        "transition_boundary_value": band[1],
+        "stars": len(star_reasons),
+        "star_reasons": star_reasons,
+    }
 
 
 def screen_payload(key, payload, contract, lookback=8, atr_window=14):
@@ -246,23 +309,31 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     ):
         result["long_support_warning"].append(latest_item)
 
-    short_turn = _transition(payload, "blue", 1, "EE", lambda price, line: price < line, lookback)
-    if short_turn:
-        index, transition_close, boundary = short_turn
-        result["long_to_short"].append(_make_item(
-            key, payload, contract, latest, ma7, atr14,
-            transition_date=payload["dates"][index], transition_from="red", transition_to="blue",
-            transition_close=transition_close, transition_boundary="EE", transition_boundary_value=boundary,
-        ))
-
-    long_turn = _transition(payload, "red", -1, "PP", lambda price, line: price > line, lookback)
-    if long_turn:
-        index, transition_close, boundary = long_turn
-        result["short_to_long"].append(_make_item(
-            key, payload, contract, latest, ma7, atr14,
-            transition_date=payload["dates"][index], transition_from="blue", transition_to="red",
-            transition_close=transition_close, transition_boundary="PP", transition_boundary_value=boundary,
-        ))
+    if "bar_colors" in payload:
+        short_turn = _four_hour_transition(payload, "blue")
+        if short_turn:
+            result["long_to_short"].append(_make_item(key, payload, contract, latest, ma7, atr14, **short_turn))
+        long_turn = _four_hour_transition(payload, "red")
+        if long_turn:
+            result["short_to_long"].append(_make_item(key, payload, contract, latest, ma7, atr14, **long_turn))
+    else:
+        # Daily board retains its original relative-strength transition rule.
+        short_turn = _transition(payload, "blue", 1, "EE", lambda price, line: price < line, lookback)
+        if short_turn:
+            index, transition_close, boundary = short_turn
+            result["long_to_short"].append(_make_item(
+                key, payload, contract, latest, ma7, atr14,
+                transition_date=payload["dates"][index], transition_from="red", transition_to="blue",
+                transition_close=transition_close, transition_boundary="EE", transition_boundary_value=boundary,
+            ))
+        long_turn = _transition(payload, "red", -1, "PP", lambda price, line: price > line, lookback)
+        if long_turn:
+            index, transition_close, boundary = long_turn
+            result["short_to_long"].append(_make_item(
+                key, payload, contract, latest, ma7, atr14,
+                transition_date=payload["dates"][index], transition_from="blue", transition_to="red",
+                transition_close=transition_close, transition_boundary="PP", transition_boundary_value=boundary,
+            ))
     return result
 
 
@@ -270,12 +341,15 @@ def _sort_results(results):
     # 趋势榜单按均线偏离的 ATR 标准化分数排列；多头越大越强、空头越小越强。
     descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
-        items.sort(key=lambda item: item["score"], reverse=bucket in descending)
+        if bucket in {"long_to_short", "short_to_long"}:
+            items.sort(key=lambda item: (-item.get("stars", 0), -item["score"] if bucket in descending else item["score"]))
+        else:
+            items.sort(key=lambda item: item["score"], reverse=bucket in descending)
 
 
-def screen_contracts(contracts, json_dir=JSON_DIR, symbols=None, lookback=8, atr_window=14):
+def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_window=14, timeframe="1d"):
     """扫描合约池中的 JSON 产物，返回完整的可序列化筛选报告。"""
-    json_dir = Path(json_dir)
+    json_dir = Path(json_dir) if json_dir is not None else timeframe_json_dir(timeframe)
     wanted = set(symbols or [])
     known = {entry["symbol"] for entry in contracts} | {entry["symbol"].split(".")[0] for entry in contracts}
     unknown = wanted - known
@@ -303,6 +377,7 @@ def screen_contracts(contracts, json_dir=JSON_DIR, symbols=None, lookback=8, atr
             results[bucket].extend(per_symbol[bucket])
     _sort_results(results)
     return {
+        "timeframe": timeframe,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "rules": {
             "lookback": lookback,
@@ -378,19 +453,26 @@ def main():
     parser.add_argument("--symbols", nargs="+", help="只筛指定品种，支持完整 symbol 或 key")
     parser.add_argument("--lookback", type=int, default=8, help="转换检测回看 K 线数（默认 8）")
     parser.add_argument("--atr-window", type=int, default=14, help="Wilder ATR 周期（默认 14）")
-    parser.add_argument("--output-dir", type=Path, default=DATA_DIR / "screening", help="报告输出目录")
+    parser.add_argument("--output-dir", type=Path, default=None, help="覆盖单周期报告输出目录")
+    parser.add_argument("--timeframe", choices=("1d", "4h", "all"), default="1d")
     args = parser.parse_args()
     if args.lookback < 2:
         parser.error("--lookback 必须至少为 2")
     if args.atr_window < 1:
         parser.error("--atr-window 必须大于 0")
 
-    report = screen_contracts(
-        load_contracts(), symbols=args.symbols, lookback=args.lookback, atr_window=args.atr_window
-    )
-    print_report(report)
-    json_path, csv_path = write_report(report, args.output_dir)
-    print(f"\n[产物] {json_path}\n[产物] {csv_path}")
+    if args.output_dir is not None and args.timeframe == "all":
+        parser.error("--output-dir 不能与 --timeframe all 同时使用")
+    timeframes = ("1d", "4h") if args.timeframe == "all" else (args.timeframe,)
+    for timeframe in timeframes:
+        report = screen_contracts(
+            load_contracts(), symbols=args.symbols, lookback=args.lookback,
+            atr_window=args.atr_window, timeframe=timeframe,
+        )
+        print_report(report)
+        target = args.output_dir or output_dir(timeframe) / "screening"
+        json_path, csv_path = write_report(report, target)
+        print(f"\n[产物] {json_path}\n[产物] {csv_path}")
 
 
 if __name__ == "__main__":

@@ -44,11 +44,14 @@ function mask(arr: (number | null)[], posArr: number[], want: number): (number |
 }
 
 export function buildOption(d: SignalData): EChartsOption {
-  // K线着色：PQ红(强) / PR蓝(弱) / 中性灰(阳浅灰、阴深灰)
+  const isFourHour = d.timeframe === '4h'
+  // 日线：PQ红(强) / PR蓝(弱)；4小时：上涨红、下跌蓝、平盘灰。
   const kdata = d.ohlc.map((v, i) => {
     let color: string, color0: string
-    if (d.PQ[i]) { color = PQ_COLOR; color0 = PQ_COLOR }
-    else if (d.PR[i]) { color = PR_COLOR; color0 = PR_COLOR }
+    if (isFourHour && d.bar_colors?.[i] === 'red') { color = PQ_COLOR; color0 = PQ_COLOR }
+    else if (isFourHour && d.bar_colors?.[i] === 'blue') { color = PR_COLOR; color0 = PR_COLOR }
+    else if (!isFourHour && d.PQ?.[i]) { color = PQ_COLOR; color0 = PQ_COLOR }
+    else if (!isFourHour && d.PR?.[i]) { color = PR_COLOR; color0 = PR_COLOR }
     else { color = '#8b95ab'; color0 = '#454e63' }
     return { value: v, itemStyle: { color, color0, borderColor: color, borderColor0: color0 } }
   })
@@ -86,13 +89,13 @@ export function buildOption(d: SignalData): EChartsOption {
   // NN/GG 强弱数字（默认隐藏，图例可开）
   const nnPts: Record<string, unknown>[] = []
   const ggPts: Record<string, unknown>[] = []
-  d.NN.forEach((v, i) => {
+  ;(d.NN ?? []).forEach((v, i) => {
     if (v !== null && v !== 0) nnPts.push({
       coord: [i, d.ohlc[i][3] * 1.01], value: v, symbolSize: 1,
       label: { show: true, formatter: String(v), color: '#ff6b6b', fontSize: 9, position: 'top' },
     })
   })
-  d.GG.forEach((v, i) => {
+  ;(d.GG ?? []).forEach((v, i) => {
     if (v !== null && v !== 0) ggPts.push({
       coord: [i, d.ohlc[i][2] * 0.99], value: v, symbolSize: 1,
       label: { show: true, formatter: String(v), color: '#51cf66', fontSize: 9, position: 'bottom' },
@@ -139,7 +142,7 @@ export function buildOption(d: SignalData): EChartsOption {
     backgroundColor: '#0f1420',
     animation: false,
     legend: {
-      data: ['多头趋势带', '空头趋势带', '通道DD(开多)', '通道EE(平多)', '通道KK(开空)', '通道PP(平空)', '七日中点', 'NN/GG强弱数字'],
+      data: ['多头趋势带', '空头趋势带', '通道DD(开多)', '通道EE(平多)', '通道KK(开空)', '通道PP(平空)', '七日中点', ...(!isFourHour ? ['NN/GG强弱数字'] : [])],
       textStyle: { color: '#aab4cc' }, top: 4,
       selected: { 'NN/GG强弱数字': false },
     },
@@ -156,8 +159,9 @@ export function buildOption(d: SignalData): EChartsOption {
           `量 ${(d.volume[i] / 1e4).toFixed(1)}万 持仓 ${(d.opi[i] / 1e4).toFixed(1)}万<br>`
         const s = d.signals.find((x) => x.i === i)
         if (s) h += `<b style="color:${SIG_STYLE[s.type].c}">信号：${s.type}</b><br>`
-        if (d.PQ[i]) h += '<span style="color:#ff5252">强于南华指数</span><br>'
-        if (d.PR[i]) h += '<span style="color:#2979ff">弱于南华指数</span><br>'
+        if (isFourHour) h += `<span style="color:${d.bar_colors?.[i] === 'red' ? '#ff5252' : d.bar_colors?.[i] === 'blue' ? '#2979ff' : '#8b95ab'}">${d.bar_colors?.[i] === 'red' ? '上涨红K' : d.bar_colors?.[i] === 'blue' ? '下跌蓝K' : '平盘灰K'}</span><br>`
+        else if (d.PQ?.[i]) h += '<span style="color:#ff5252">强于南华指数</span><br>'
+        else if (d.PR?.[i]) h += '<span style="color:#2979ff">弱于南华指数</span><br>'
         if (d.SB[i]) h += `<span>🤭 SB 多头增仓</span><br>`
         if (d.DSB[i]) h += `<span>😓 DSB 洗盘后站起</span><br>`
         if (d.DSBE[i]) {
@@ -166,7 +170,7 @@ export function buildOption(d: SignalData): EChartsOption {
           if (note) h += `<span>（${note}）</span>`
           h += '<br>'
         }
-        h += `周线许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`
+        h += `${isFourHour ? '日线' : '周线'}许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`
         return h
       },
     },

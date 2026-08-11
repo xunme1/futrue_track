@@ -32,7 +32,7 @@ class RicequantSource(DataSource):
         rqdatac.init("license", self._key)
         self._rq = rqdatac
 
-    def futures_daily(self, symbol, start, end):
+    def _request_symbol(self, symbol):
         import re
         request_symbol = symbol.upper()
         is_equity_index = request_symbol.endswith((".XSHG", ".XSHE"))
@@ -42,30 +42,49 @@ class RicequantSource(DataSource):
             if m:                                    # 郑商所3位年月码(CF609) → 米筐4位(CF2609)
                 base = f"{m.group(1)}2{m.group(2)}"
             request_symbol = base
+        return request_symbol, base, is_equity_index
+
+    @staticmethod
+    def _normalise(df, symbol):
+        if df is None or len(df) == 0:
+            raise RuntimeError(f"[米筐] 未取到 {symbol} 的数据，请检查合约代码或权限")
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.reset_index()
+            tcol = "datetime" if "datetime" in df.columns else "date"
+            df = df.set_index(pd.to_datetime(df[tcol])).drop(columns=[tcol])
+        else:
+            df.index = pd.to_datetime(df.index)
+        df.index.name = "time"
+        df = df.rename(columns={"open_interest": "ccl"})
+        if "ccl" not in df.columns:
+            df["ccl"] = 0.0
+        cols = ["open", "high", "low", "close", "volume", "ccl"]
+        if "trading_date" in df.columns:
+            cols.append("trading_date")
+        return df[cols].sort_index()
+
+    def _futures_price(self, symbol, start, end, frequency):
+        request_symbol, base, is_equity_index = self._request_symbol(symbol)
         if not is_equity_index and base.endswith("8888"):  # 主力连续
             df = self._rq.futures.get_dominant_price(
                 base[:-4], start_date=start, end_date=end,
-                frequency="1d", adjust_type="none")
+                frequency=frequency, adjust_type="none")
         else:                                           # 具体期货合约或指数
             fields = ["open", "high", "low", "close", "volume"]
             if not is_equity_index:
                 fields.append("open_interest")
             df = self._rq.get_price(
-                request_symbol, start_date=start, end_date=end, frequency="1d",
+                request_symbol, start_date=start, end_date=end, frequency=frequency,
                 fields=fields,
                 adjust_type="none", expect_df=True)
-        if df is None or len(df) == 0:
-            raise RuntimeError(f"[米筐] 未取到 {symbol}（{request_symbol}）的数据，请检查合约代码或权限")
-        if isinstance(df.index, pd.MultiIndex):         # get_dominant_price 返回 (symbol, datetime) 多级索引
-            df = df.reset_index()
-            tcol = "datetime" if "datetime" in df.columns else "date"
-            df = df.set_index(pd.to_datetime(df[tcol])).drop(columns=[tcol])
-        df.index = pd.to_datetime(df.index)
-        df.index.name = "time"
-        df = df.rename(columns={"open_interest": "ccl"})
-        if "ccl" not in df.columns:                 # 股票指数没有持仓量，策略图表以 0 占位
-            df["ccl"] = 0.0
-        return df[["open", "high", "low", "close", "volume", "ccl"]].sort_index()
+        return self._normalise(df, symbol)
+
+    def futures_daily(self, symbol, start, end):
+        return self._futures_price(symbol, start, end, "1d")
+
+    def futures_4h(self, symbol, start, end):
+        """Native 240-minute bars, including RQData's trading_date for night sessions."""
+        return self._futures_price(symbol, start, end, "240m")
 
     def index_daily(self, symbol, start, end):
         raise NotImplementedError("[米筐] 无南华商品指数，指数数据固定走 iFinD")

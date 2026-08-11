@@ -5,6 +5,8 @@
  */
 
 /** GET /api/contracts 单项 */
+export type Timeframe = '1d' | '4h'
+
 export interface ContractInfo {
   key: string        // 品种键，调 /api/signals/{key} 用这个值
   symbol: string     // 完整代码，如 TA609.CZC
@@ -36,14 +38,16 @@ export interface TradeSignal {
 /** GET /api/signals/{key} 完整响应；所有数组等长、按索引 i 对齐，null=指标不可用 */
 export interface SignalData {
   symbol: string
+  timeframe?: Timeframe
   dates: string[]
   ohlc: [number, number, number, number][]   // [开, 收, 低, 高]
   volume: number[]
   opi: number[]                               // 持仓量（ccl）
-  PQ: boolean[]                               // 强于南华指数（红K）
-  PR: boolean[]                               // 弱于南华指数（蓝K）
-  NN: (number | null)[]                       // 强弱数字（默认隐藏）
-  GG: (number | null)[]
+  PQ?: boolean[]                              // 日线：强于南华指数（红K）
+  PR?: boolean[]                              // 日线：弱于南华指数（蓝K）
+  NN?: (number | null)[]                      // 日线强弱数字（默认隐藏）
+  GG?: (number | null)[]
+  bar_colors?: ('red' | 'blue' | 'gray')[]    // 4小时：上涨 / 下跌 / 平盘
   signals: TradeSignal[]
   SB: boolean[]                               // 多头增仓（金钻）
   DSB: boolean[]                              // 洗盘后站起（橙钻）
@@ -83,8 +87,9 @@ export interface ScreeningItem {
   ma7: number
   atr14: number
   score: number
-  PQ: boolean
-  PR: boolean
+  PQ?: boolean
+  PR?: boolean
+  bar_color?: 'red' | 'blue' | 'gray'
   POS: number
   DD: number | null
   EE: number | null
@@ -96,9 +101,15 @@ export interface ScreeningItem {
   transition_close?: number
   transition_boundary?: 'EE' | 'PP'
   transition_boundary_value?: number
+  signal_name?: '空转多' | '多转空'
+  signal_date?: string
+  trend_band_date?: string
+  stars?: number
+  star_reasons?: string[]
 }
 
 export interface ScreeningReport {
+  timeframe?: Timeframe
   generated_at: string
   rules: {
     lookback: number

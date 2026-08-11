@@ -1,4 +1,4 @@
-import type { ScreeningBucket, ScreeningReport } from '../types'
+import type { ScreeningBucket, ScreeningReport, Timeframe } from '../types'
 
 export const MAIN_BUCKETS: { key: ScreeningBucket; label: string }[] = [
   { key: 'long_trend', label: '多头趋势' },
@@ -13,6 +13,10 @@ export const WARNING_BUCKETS: { key: ScreeningBucket; label: string }[] = [
 ]
 
 export const LEADERBOARD_BUCKETS = [...MAIN_BUCKETS, ...WARNING_BUCKETS]
+export const FOUR_HOUR_BUCKETS: { key: ScreeningBucket; label: string }[] = [
+  { key: 'short_to_long', label: '空转多' },
+  { key: 'long_to_short', label: '多转空' },
+]
 
 interface Props {
   report: ScreeningReport | null
@@ -24,6 +28,7 @@ interface Props {
   onSelect: (key: string, bucket: ScreeningBucket) => void
   onShowMethod: () => void
   onClose?: () => void
+  timeframe: Timeframe
 }
 
 function scoreText(value: number): string {
@@ -36,10 +41,11 @@ function closeText(value: number): string {
 
 /** 左侧筛选榜单；drawer=true 时供窄屏覆盖式抽屉复用。 */
 export default function Leaderboard({
-  report, error, bucket, activeKey, drawer = false, onBucketChange, onSelect, onShowMethod, onClose,
+  report, error, bucket, activeKey, drawer = false, onBucketChange, onSelect, onShowMethod, onClose, timeframe,
 }: Props) {
   const items = report?.buckets[bucket] ?? []
-  const activeMeta = LEADERBOARD_BUCKETS.find((item) => item.key === bucket)
+  const mainBuckets = timeframe === '4h' ? FOUR_HOUR_BUCKETS : MAIN_BUCKETS
+  const activeMeta = [...mainBuckets, ...WARNING_BUCKETS].find((item) => item.key === bucket)
 
   return (
     <aside className={`leaderboard${drawer ? ' leaderboard-drawer' : ''}`} aria-label="筛选榜单">
@@ -57,7 +63,7 @@ export default function Leaderboard({
       </div>
 
       <div className="leaderboard-tabs" role="tablist" aria-label="筛选类别">
-        {MAIN_BUCKETS.map((item) => (
+        {mainBuckets.map((item) => (
           <button
             key={item.key}
             role="tab"
@@ -71,7 +77,7 @@ export default function Leaderboard({
         ))}
       </div>
 
-      <div className="leaderboard-warning-tabs" role="tablist" aria-label="趋势带预警">
+      {timeframe !== '4h' && <div className="leaderboard-warning-tabs" role="tablist" aria-label="趋势带预警">
         <span className="leaderboard-warning-title">预警</span>
         <div className="leaderboard-warning-buttons">
           {WARNING_BUCKETS.map((item) => (
@@ -87,7 +93,7 @@ export default function Leaderboard({
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       <div className="leaderboard-list" role="tabpanel">
         {error && <div className="leaderboard-message error">{error}</div>}
@@ -106,6 +112,7 @@ export default function Leaderboard({
               <b>{item.name}</b>
               <small>{item.symbol}</small>
               {item.transition_date && <em>转折 {item.transition_date}</em>}
+              {item.signal_date && <em title={item.star_reasons?.join('；')}>标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
             </span>
             <span className="leaderboard-values">
               <b className={item.score >= 0 ? 'score-up' : 'score-down'}>{scoreText(item.score)}</b>

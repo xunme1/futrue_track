@@ -110,6 +110,18 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 #    GET /api/symbols  GET /api/signals/rb8888  GET / （看板）
 ```
 
+### 4 小时看板
+
+4 小时版使用米筐原生 `240m` 行情，保留 M/W 通道、开平仓和 OPI 资金信号；以**上一已完成日线**作方向过滤，不使用南华指数。红 K 表示上涨、蓝 K 表示下跌。日线产物仍在 `data/`，4 小时产物独立位于 `data/4h/`。
+
+```bash
+.venv/Scripts/python -m backend.pipeline.download --timeframe all
+.venv/Scripts/python -m backend.pipeline.daily --timeframe all
+.venv/Scripts/python -m backend.pipeline.screen --timeframe all
+```
+
+看板通过顶部“日线 / 4小时”切换周期；4 小时深链形式为 `/?timeframe=4h#rb2610`。API 的 `/api/contracts`、`/api/symbols`、`/api/screening`、`/api/signals/{key}` 均可附加 `?timeframe=4h`，未提供参数时仍返回日线数据。
+
 ## 安装与凭据
 
 ```powershell
@@ -142,6 +154,28 @@ crontab -e
 ```
 
 脚本会依次运行下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
+
+### 4 小时看板更新与前端构建
+
+`tools/refresh_4h.sh` 只更新米筐 `240m` 行情、4 小时信号 JSON/CSV 与 4 小时筛选榜单；它不会触碰日线产物。建议在**上海时间工作日 15:35**执行，留出日盘最后一根 K 线收线和米筐入库的缓冲时间：
+
+```bash
+chmod 700 /opt/futrue_track/tools/refresh_4h.sh /opt/futrue_track/tools/build_frontend.sh
+crontab -e
+
+# 周一至周五 15:35：只刷新 4 小时看板数据
+35 15 * * 1-5 /opt/futrue_track/tools/refresh_4h.sh
+```
+
+代码部署后（例如 `git pull` 后）执行一次前端构建即可，无需加到每日 Cron：
+
+```bash
+cd /opt/futrue_track/web
+npm ci                 # 仅首次部署或 package-lock.json 改动后执行
+/opt/futrue_track/tools/build_frontend.sh
+```
+
+构建产物为 `frontend/dist/`，运行中的 FastAPI 会直接托管新文件；不需要重启 API 服务。4 小时脚本日志写入 `data/logs/refresh-4h.log`，并使用独立锁文件，因而可以与 17:30 的日线任务共存。
 
 ## 扩展指南
 

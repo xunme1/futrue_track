@@ -19,6 +19,10 @@ class DataSource(ABC):
     def futures_daily(self, symbol: str, start: str, end: str):
         """期货日线 → DataFrame[open/high/low/close/volume/ccl]，DatetimeIndex"""
 
+    def futures_4h(self, symbol: str, start: str, end: str):
+        """期货 4 小时线；仅支持该周期的数据源应覆盖此方法。"""
+        raise NotImplementedError(f"[{self.name}] does not provide 4-hour futures bars")
+
     def futures_weekly(self, symbol: str, start: str, end: str, daily_df=None):
         """期货周线：默认由日线聚合（W-FRI）；源原生支持周线可覆盖"""
         if daily_df is None:

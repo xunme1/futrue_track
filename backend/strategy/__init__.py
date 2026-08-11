@@ -3,10 +3,11 @@
 策略注册表：新增策略时在 backend/strategy/ 下新建模块（实现 compute(fut_d, fut_w, idx_d, p)），
 并在此登记即可被流水线调用。
 """
-from . import zxgl_xdd
+from . import zxgl_4h, zxgl_xdd
 
 STRATEGIES = {
     zxgl_xdd.STRATEGY_NAME: zxgl_xdd,
+    zxgl_4h.STRATEGY_NAME: zxgl_4h,
 }
 
 DEFAULT_STRATEGY = zxgl_xdd.STRATEGY_NAME
