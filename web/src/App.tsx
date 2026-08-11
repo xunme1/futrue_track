@@ -46,7 +46,11 @@ export default function App() {
     setActiveKey(key)
     if (nextBucket) setBucket(nextBucket)
     setDrawerOpen(false); setPickerOpen(false)
-    if (syncHash && hashKey() !== key) location.hash = `#${encodeURIComponent(key)}`
+    // 用 history 写入深链而非 location.hash：同一品种可能同时属于趋势和预警，
+    // 直接触发 hashchange 会被导航监听按“趋势优先”反查，从而覆盖用户的栏目选择。
+    if (syncHash && hashKey() !== key) {
+      history.pushState(null, '', `${location.pathname}${location.search}#${encodeURIComponent(key)}`)
+    }
   }, [])
 
   useEffect(() => {

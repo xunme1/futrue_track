@@ -21,9 +21,19 @@ export function fetchContracts(timeframe: Timeframe): Promise<ContractInfo[]> {
 /** 某品种完整图表数据 */
 export function fetchSignals(key: string, timeframe: Timeframe): Promise<SignalData> {
   return getJson<SignalData>(`/api/signals/${encodeURIComponent(key)}${timeframeQuery(timeframe)}`)
+    .then((payload) => assertRequestedTimeframe(payload, timeframe))
 }
 
 /** 最新本地筛选报告（由 backend.pipeline.screen 生成）。 */
 export function fetchScreening(timeframe: Timeframe): Promise<ScreeningReport> {
   return getJson<ScreeningReport>(`/api/screening${timeframeQuery(timeframe)}`)
+    .then((report) => assertRequestedTimeframe(report, timeframe))
+}
+
+/** 防止旧版服务端忽略 ?timeframe=4h 后把日线数据静默混入 4 小时页面。 */
+function assertRequestedTimeframe<T extends { timeframe?: Timeframe }>(payload: T, timeframe: Timeframe): T {
+  if (timeframe === '4h' && payload.timeframe !== '4h') {
+    throw new Error('服务器未返回 4 小时数据：请更新并重启 API 服务，再执行 4 小时更新任务。')
+  }
+  return payload
 }
