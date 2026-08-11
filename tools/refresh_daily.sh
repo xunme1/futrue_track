@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ubuntu 服务器日更入口：日线与4小时行情下载 → 信号计算 → 筛选榜单。
+# Ubuntu 服务器日线更新入口：日线行情下载 → 信号计算 → 筛选榜单。
 # 建议由 Cron 在工作日 17:30（Asia/Shanghai）调用：
 #   30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
 
@@ -52,9 +52,8 @@ else
   echo "[警告] 未找到 iFinD 动态库目录: ${IFIND_LIBRARY_DIR}"
 fi
 
-"${PYTHON_BIN}" -m backend.pipeline.download --timeframe all
-"${PYTHON_BIN}" -m backend.pipeline.daily --timeframe all
-# 基于本次信号产物重新生成日线与4小时榜单；多空趋势按 POS 归类并按 score 排序。
-"${PYTHON_BIN}" -m backend.pipeline.screen --timeframe all
+"${PYTHON_BIN}" -m backend.pipeline.download --timeframe 1d
+"${PYTHON_BIN}" -m backend.pipeline.daily --timeframe 1d
+"${PYTHON_BIN}" -m backend.pipeline.screen --timeframe 1d
 
 echo "===== $(date '+%F %T %Z') 日更完成 ====="
