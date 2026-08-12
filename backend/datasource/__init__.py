@@ -34,4 +34,16 @@ def logout_all():
     _instances.clear()
 
 
-__all__ = ["DataSource", "SOURCES", "INDEX_SOURCE", "get_source", "logout_all", "resample_weekly"]
+def reconnect_source(name: str, cfg) -> DataSource:
+    """刷新已创建的数据源会话，供可恢复的认证错误重试使用。"""
+    if name not in _instances:
+        return get_source(name, cfg)
+    src = _instances[name]
+    try:
+        src.logout()
+    finally:
+        src.login()
+    return src
+
+
+__all__ = ["DataSource", "SOURCES", "INDEX_SOURCE", "get_source", "logout_all", "reconnect_source", "resample_weekly"]

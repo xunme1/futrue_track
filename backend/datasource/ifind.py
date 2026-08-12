@@ -14,6 +14,23 @@ from iFinDPy import THS_HistoryQuotes, THS_iFinDLogin, THS_iFinDLogout
 from .base import DataSource
 
 
+class IFindRequestError(RuntimeError):
+    """保留 iFinD 错误码，供下载流水线区分可恢复的会话失效。"""
+
+    def __init__(self, symbol, period, errorcode, errmsg):
+        self.symbol = symbol
+        self.period = period
+        self.errorcode = errorcode
+        self.errmsg = errmsg or ""
+        super().__init__(
+            f"[iFinD] {symbol} {period} 取数失败: ec={errorcode} {self.errmsg}"
+        )
+
+    @property
+    def session_expired(self):
+        return str(self.errorcode) == "-1010" or "logged out" in self.errmsg.lower()
+
+
 class IFindSource(DataSource):
     name = "ifind"
 
@@ -38,7 +55,7 @@ class IFindSource(DataSource):
     def _history(self, symbol, indicators, period, start, end):
         r = THS_HistoryQuotes(symbol, indicators, f"period:{period},fill:Blank", start, end)
         if r.get("errorcode") != 0:
-            raise RuntimeError(f"[iFinD] {symbol} {period} 取数失败: ec={r.get('errorcode')} {r.get('errmsg')}")
+            raise IFindRequestError(symbol, period, r.get("errorcode"), r.get("errmsg"))
         t = r["tables"][0]
         df = pd.DataFrame(t["table"])
         df["time"] = pd.to_datetime(t["time"])

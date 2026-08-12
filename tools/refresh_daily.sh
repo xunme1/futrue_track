@@ -44,6 +44,8 @@ cd "${PROJECT_ROOT}"
 set -a
 . "${ENV_FILE}"
 set +a
+IFIND_RETRIES="${FUTURES_MONITOR_IFIND_RETRIES:-3}"
+IFIND_RETRY_DELAY="${FUTURES_MONITOR_IFIND_RETRY_DELAY:-5}"
 
 # iFinD Linux SDK 的动态库目录；不存在时保留现有环境，便于定位安装问题。
 if [[ -d "${IFIND_LIBRARY_DIR}" ]]; then
@@ -52,7 +54,8 @@ else
   echo "[警告] 未找到 iFinD 动态库目录: ${IFIND_LIBRARY_DIR}"
 fi
 
-"${PYTHON_BIN}" -m backend.pipeline.download --timeframe 1d
+"${PYTHON_BIN}" -m backend.pipeline.download --timeframe 1d \
+  --ifind-retries "${IFIND_RETRIES}" --ifind-retry-delay "${IFIND_RETRY_DELAY}"
 "${PYTHON_BIN}" -m backend.pipeline.daily --timeframe 1d
 "${PYTHON_BIN}" -m backend.pipeline.screen --timeframe 1d
 

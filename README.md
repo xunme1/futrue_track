@@ -153,7 +153,7 @@ crontab -e
 30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
 ```
 
-脚本会依次运行下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
+脚本会依次运行下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。iFinD 返回会话失效（如 `ec=-1010 Your account has been logged out`）时，会等待 5 秒、重新登录并额外重试 3 次；可通过 `/etc/future-track.env` 的 `FUTURES_MONITOR_IFIND_RETRIES` 和 `FUTURES_MONITOR_IFIND_RETRY_DELAY` 调整。重试耗尽或发生权限/参数等非会话错误时，脚本会在下载阶段退出，**不会**继续生成信号和榜单。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
 
 ### 4 小时看板更新与前端构建
 

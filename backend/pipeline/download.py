@@ -12,6 +12,7 @@
 """
 import argparse
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,14 +20,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.core.config import CFG, load_contracts
 from backend.core.store import Store
-from backend.datasource import INDEX_SOURCE, SOURCES, get_source, logout_all
+from backend.datasource import INDEX_SOURCE, SOURCES, get_source, logout_all, reconnect_source
+from backend.datasource.ifind import IFindRequestError, IFindSource
 
 OVERLAP_DAILY = 10    # 日线回扫天数
 OVERLAP_WEEKLY = 75   # 周线回扫天数（覆盖未完结周 + 7周均线窗口）
 OVERLAP_4H = 10       # 4 小时线按日更回扫，覆盖数据源近期修正
 
 
-def sync(store, source, dataset, symbol, fetch_fn, start_pad, end, overlap, full=False):
+def _fetch_with_ifind_retry(source, fetch_fn, symbol, start, end, retries, retry_delay):
+    """会话超时后仅重连 iFinD 并重试当前请求，其他错误仍立即失败。"""
+    for attempt in range(retries + 1):
+        try:
+            return fetch_fn(symbol, start, end)
+        except IFindRequestError as exc:
+            if source != IFindSource.name or not exc.session_expired or attempt == retries:
+                raise
+            print(
+                f"  [{symbol}] iFinD 会话已失效（ec={exc.errorcode}），"
+                f"{retry_delay} 秒后重新登录并重试（{attempt + 1}/{retries}）"
+            )
+            if retry_delay:
+                time.sleep(retry_delay)
+            reconnect_source(source, CFG)
+
+
+def sync(store, source, dataset, symbol, fetch_fn, start_pad, end, overlap, full=False,
+         ifind_retries=3, ifind_retry_delay=5):
     last = None if full else store.last_date(source, dataset, symbol)
     if last is None:
         fetch_start = start_pad
@@ -37,7 +57,9 @@ def sync(store, source, dataset, symbol, fetch_fn, start_pad, end, overlap, full
     if fetch_start > end:
         print(f"  [{symbol}] {dataset} 已是最新（{last.date()}），跳过")
         return
-    df = fetch_fn(symbol, fetch_start, end)
+    df = _fetch_with_ifind_retry(
+        source, fetch_fn, symbol, fetch_start, end, ifind_retries, ifind_retry_delay
+    )
     if df is None or len(df) == 0:
         print(f"  [{symbol}] {dataset} 数据源无新数据")
         return
@@ -53,9 +75,15 @@ def main():
         help="临时覆盖所有期货合约的数据源（默认使用 contracts.yaml 中各合约的 source）",
     )
     ap.add_argument("--full", action="store_true", help="强制全量重下")
+    ap.add_argument("--ifind-retries", type=int, default=3,
+                    help="iFinD 会话失效后的额外重试次数（默认 3）")
+    ap.add_argument("--ifind-retry-delay", type=int, default=5,
+                    help="iFinD 重新登录前等待秒数（默认 5）")
     ap.add_argument("--timeframe", choices=("1d", "4h", "all"), default="1d",
                     help="下载日线、4小时线，或两者（默认日线，保持兼容）")
     args = ap.parse_args()
+    if args.ifind_retries < 0 or args.ifind_retry_delay < 0:
+        ap.error("--ifind-retries 与 --ifind-retry-delay 不能为负数")
 
     watchlist = load_contracts()
     if args.symbols:
@@ -76,16 +104,20 @@ def main():
             src = get_source(source, CFG)
             print(f"[{sym}] 数据源={source}")
             if args.timeframe in ("1d", "all"):
-                sync(store, source, "futures_daily", sym, src.futures_daily, start_pad, end, OVERLAP_DAILY, args.full)
-                sync(store, source, "futures_weekly", sym, src.futures_weekly, start_pad, end, OVERLAP_WEEKLY, args.full)
+                sync(store, source, "futures_daily", sym, src.futures_daily, start_pad, end, OVERLAP_DAILY,
+                     args.full, args.ifind_retries, args.ifind_retry_delay)
+                sync(store, source, "futures_weekly", sym, src.futures_weekly, start_pad, end, OVERLAP_WEEKLY,
+                     args.full, args.ifind_retries, args.ifind_retry_delay)
             if args.timeframe in ("4h", "all"):
-                sync(store, source, "futures_4h", sym, src.futures_4h, start_pad, end, OVERLAP_4H, args.full)
+                sync(store, source, "futures_4h", sym, src.futures_4h, start_pad, end, OVERLAP_4H,
+                     args.full, args.ifind_retries, args.ifind_retry_delay)
 
         if args.timeframe in ("1d", "all"):
             idx_sym = CFG["symbols"]["index"]
             idx_src = get_source(INDEX_SOURCE, CFG)
             print(f"[{idx_sym}] 指数 数据源={INDEX_SOURCE}")
-            sync(store, INDEX_SOURCE, "index_daily", idx_sym, idx_src.index_daily, start_pad, end, OVERLAP_DAILY, args.full)
+            sync(store, INDEX_SOURCE, "index_daily", idx_sym, idx_src.index_daily, start_pad, end, OVERLAP_DAILY,
+                 args.full, args.ifind_retries, args.ifind_retry_delay)
     finally:
         logout_all()
     print("[完成] 本地行情库已更新")
