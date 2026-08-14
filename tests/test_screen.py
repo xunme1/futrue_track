@@ -47,26 +47,34 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(len(short_hits["short_trend"]), 1)
         self.assertTrue(short_hits["short_trend"][0]["PQ"])
 
-    def test_transitions_require_first_target_bar_break_and_continuity(self):
+    def test_transitions_allow_break_on_first_or_second_target_bar(self):
         down = payload()
         down["PQ"][13], down["POS"][13] = True, 1
         down["PR"][14], down["PR"][15] = True, True
-        down["ohlc"][14] = [90, 90, 89, 91]
+        # 首根蓝 K 仍在支撑带内，第二根才严格跌破 EE，也应确认多转空。
+        down["ohlc"][14] = [98, 98, 97, 99]
+        down["ohlc"][15] = [90, 90, 89, 91]
         down["EE"][14] = 95
+        down["EE"][15] = 95
         hits = screen_payload("down", down, CONTRACT)
         self.assertEqual(hits["long_to_short"][0]["transition_date"], down["dates"][14])
+        self.assertEqual(hits["long_to_short"][0]["transition_close"], 98)
+        self.assertEqual(hits["long_to_short"][0]["confirmation_date"], down["dates"][15])
+        self.assertEqual(hits["long_to_short"][0]["confirmation_close"], 90)
 
         equality = payload()
         equality["PQ"][13], equality["POS"][13] = True, 1
         equality["PR"][14], equality["PR"][15] = True, True
         equality["ohlc"][14] = [95, 95, 94, 96]
+        equality["ohlc"][15] = [95, 95, 94, 96]
         equality["EE"][14] = 95
+        equality["EE"][15] = 95
         self.assertFalse(screen_payload("equal", equality, CONTRACT)["long_to_short"])
 
         interrupted = payload()
         interrupted["PQ"][13], interrupted["POS"][13] = True, 1
         interrupted["PR"][14], interrupted["PR"][15] = True, True
-        interrupted["ohlc"][14] = [90, 90, 89, 91]
+        interrupted["ohlc"][14] = [98, 98, 97, 99]
         interrupted["EE"][14] = 95
         interrupted["PQ"][15] = True
         self.assertFalse(screen_payload("interrupted", interrupted, CONTRACT)["long_to_short"])
@@ -75,11 +83,14 @@ class ScreenTests(unittest.TestCase):
         up = payload()
         up["PR"][13], up["POS"][13] = True, -1
         up["PQ"][14], up["PQ"][15] = True, True
-        up["ohlc"][14] = [110, 110, 109, 111]
+        up["ohlc"][14] = [102, 102, 101, 103]
+        up["ohlc"][15] = [110, 110, 109, 111]
         up["PP"][14] = 105
+        up["PP"][15] = 105
         hits = screen_payload("up", up, CONTRACT)
         self.assertEqual(hits["short_to_long"][0]["transition_date"], up["dates"][14])
         self.assertEqual(hits["short_to_long"][0]["transition_boundary"], "PP")
+        self.assertEqual(hits["short_to_long"][0]["confirmation_date"], up["dates"][15])
 
         warning = payload(close=100)
         warning["PQ"][-1], warning["POS"][-1] = True, -1

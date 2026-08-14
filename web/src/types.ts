@@ -101,6 +101,9 @@ export interface ScreeningItem {
   transition_close?: number
   transition_boundary?: 'EE' | 'PP'
   transition_boundary_value?: number
+  confirmation_date?: string
+  confirmation_close?: number
+  confirmation_boundary_value?: number
   signal_name?: '空转多' | '多转空'
   signal_date?: string
   trend_band_date?: string

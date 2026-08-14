@@ -189,18 +189,43 @@ def _target_run_start(payload, target, lookback):
 
 
 def _transition(payload, target, source_pos, boundary_key, comparator, lookback):
-    """检测目标色段的首根 K 是否在转折处突破指定通道边界。"""
+    """检测日线转色后的前两根同色 K 是否完成趋势带突破。
+
+    首根目标色 K 只用于确认转色，突破可以发生在首根或紧随其后的
+    第二根目标色 K。这样保留连续变色和严格边界突破的确认条件，同时
+    不会遗漏首根 K 仍在趋势带内、次日才完成突破的转折。
+    """
     start = _target_run_start(payload, target, lookback)
     if start is None or bar_color(payload, start - 1) == target:
         return None
     source = "red" if target == "blue" else "blue"
     if bar_color(payload, start - 1) != source or payload["POS"][start - 1] != source_pos:
         return None
+
     transition_close = _close(payload, start)
-    boundary = _number(payload[boundary_key][start])
-    if transition_close is None or boundary is None or not comparator(transition_close, boundary):
+    transition_boundary = _number(payload[boundary_key][start])
+    if transition_close is None or transition_boundary is None:
         return None
-    return start, transition_close, boundary
+
+    # _target_run_start 已保证目标色段至少有两根；只在转色后的前两根
+    # 连续目标色 K 中寻找严格突破，避免将数日后的无关波动归为本次转折。
+    for confirmation_index in (start, start + 1):
+        confirmation_close = _close(payload, confirmation_index)
+        confirmation_boundary = _number(payload[boundary_key][confirmation_index])
+        if (
+            confirmation_close is not None
+            and confirmation_boundary is not None
+            and comparator(confirmation_close, confirmation_boundary)
+        ):
+            return (
+                start,
+                transition_close,
+                transition_boundary,
+                confirmation_index,
+                confirmation_close,
+                confirmation_boundary,
+            )
+    return None
 
 
 def _recent_band(payload, source_pos, boundary_key, window=9):
@@ -317,22 +342,40 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
         if long_turn:
             result["short_to_long"].append(_make_item(key, payload, contract, latest, ma7, atr14, **long_turn))
     else:
-        # Daily board retains its original relative-strength transition rule.
+        # 日线转换：转色后前两根连续目标色 K 内完成严格突破。
         short_turn = _transition(payload, "blue", 1, "EE", lambda price, line: price < line, lookback)
         if short_turn:
-            index, transition_close, boundary = short_turn
+            (
+                index,
+                transition_close,
+                boundary,
+                confirmation_index,
+                confirmation_close,
+                confirmation_boundary,
+            ) = short_turn
             result["long_to_short"].append(_make_item(
                 key, payload, contract, latest, ma7, atr14,
                 transition_date=payload["dates"][index], transition_from="red", transition_to="blue",
                 transition_close=transition_close, transition_boundary="EE", transition_boundary_value=boundary,
+                confirmation_date=payload["dates"][confirmation_index],
+                confirmation_close=confirmation_close, confirmation_boundary_value=confirmation_boundary,
             ))
         long_turn = _transition(payload, "red", -1, "PP", lambda price, line: price > line, lookback)
         if long_turn:
-            index, transition_close, boundary = long_turn
+            (
+                index,
+                transition_close,
+                boundary,
+                confirmation_index,
+                confirmation_close,
+                confirmation_boundary,
+            ) = long_turn
             result["short_to_long"].append(_make_item(
                 key, payload, contract, latest, ma7, atr14,
                 transition_date=payload["dates"][index], transition_from="blue", transition_to="red",
                 transition_close=transition_close, transition_boundary="PP", transition_boundary_value=boundary,
+                confirmation_date=payload["dates"][confirmation_index],
+                confirmation_close=confirmation_close, confirmation_boundary_value=confirmation_boundary,
             ))
     return result
 
@@ -388,6 +431,10 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             "main_trends": {
                 "long_trend": "POS=1; sorted by score descending",
                 "short_trend": "POS=-1; sorted by score ascending",
+            },
+            "daily_transitions": {
+                "long_to_short": "red->blue after POS=1; latest blue run has at least 2 bars; close<EE on either of the first 2 blue bars",
+                "short_to_long": "blue->red after POS=-1; latest red run has at least 2 bars; close>PP on either of the first 2 red bars",
             },
             "trend_band_warnings": {
                 "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
