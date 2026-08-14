@@ -37,8 +37,8 @@ export default function ScreeningMethodModal({ open, onClose, timeframe }: Props
           <thead><tr><th>类别</th><th>命中条件</th><th>排序</th></tr></thead>
           <tbody>
             {timeframe !== '4h' && <><tr><td>多头趋势</td><td>POS=1（不额外限制 K 线颜色或趋势带位置）</td><td>score 降序，越大越强</td></tr><tr><td>空头趋势</td><td>POS=-1（不额外限制 K 线颜色或趋势带位置）</td><td>score 升序，越小越强</td></tr></>}
-            <tr><td>多转空</td><td>{timeframe === '4h' ? '最近 9 根存在多头支撑带；当前下跌蓝 K 的收盘价跌破该带下沿 EE。前 8 根含偏强红 K、或含 DSBE 减仓倒手指时，各加 1 个 🌟。' : '最近 8 根内由红 K 转为蓝 K，转折前为持多；蓝 K 连续至少 2 根且最新仍为蓝 K。首根或第二根蓝 K 的收盘价严格 &lt; EE 即确认。'}</td><td>{timeframe === '4h' ? '🌟 数降序，再按 score 升序' : '按最新 score 升序'}</td></tr>
-            <tr><td>空转多</td><td>{timeframe === '4h' ? '最近 9 根存在空头压力带；当前上涨红 K 的收盘价突破该带上沿 PP。前 8 根含偏弱蓝 K、或含 SB 增仓笑脸时，各加 1 个 🌟。' : '最近 8 根内由蓝 K 转为红 K，转折前为持空；红 K 连续至少 2 根且最新仍为红 K。首根或第二根红 K 的收盘价严格 &gt; PP 即确认。'}</td><td>{timeframe === '4h' ? '🌟 数降序，再按 score 降序' : '按最新 score 降序'}</td></tr>
+            <tr><td>多转空</td><td>{timeframe === '4h' ? '最近 9 根存在多头支撑带；当前下跌蓝 K 的收盘价跌破该带下沿 EE。前 8 根含偏强红 K、或含 DSBE 减仓倒手指时，各加 1 个 🌟。' : '最近 8 根内由红 K 转为蓝 K，转折前为持多；蓝 K 连续至少 2 根且最新仍为蓝 K。该连续蓝 K 段内任一根收盘价严格 &lt; EE 即确认。'}</td><td>{timeframe === '4h' ? '🌟 数降序，再按 score 升序' : '按最新 score 升序'}</td></tr>
+            <tr><td>空转多</td><td>{timeframe === '4h' ? '最近 9 根存在空头压力带；当前上涨红 K 的收盘价突破该带上沿 PP。前 8 根含偏弱蓝 K、或含 SB 增仓笑脸时，各加 1 个 🌟。' : '最近 8 根内由蓝 K 转为红 K，转折前为持空；红 K 连续至少 2 根且最新仍为红 K。该连续红 K 段内任一根收盘价严格 &gt; PP 即确认。'}</td><td>{timeframe === '4h' ? '🌟 数降序，再按 score 降序' : '按最新 score 降序'}</td></tr>
           </tbody>
         </table>
 

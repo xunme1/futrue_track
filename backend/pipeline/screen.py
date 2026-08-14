@@ -189,12 +189,14 @@ def _target_run_start(payload, target, lookback):
 
 
 def _transition(payload, target, source_pos, boundary_key, comparator, lookback):
-    """检测日线转色后的前两根同色 K 是否完成趋势带突破。
+    """检测日线转色后的连续同色段是否完成趋势带突破。
 
-    首根目标色 K 只用于确认转色，突破可以发生在首根或紧随其后的
-    第二根目标色 K。这样保留连续变色和严格边界突破的确认条件，同时
-    不会遗漏首根 K 仍在趋势带内、次日才完成突破的转折。
+    转色前一根必须仍处于来源持仓方向；转色后的连续目标色 K 至少两根。
+    只要这段 K 线仍完整落在 ``lookback`` 窗口内，段内任意一根严格突破
+    趋势带边界即可确认。持仓状态机通常会先从 -1/1 平仓到 0，因此确认
+    K 不要求已转为相反持仓。
     """
+    n = len(payload["dates"])
     start = _target_run_start(payload, target, lookback)
     if start is None or bar_color(payload, start - 1) == target:
         return None
@@ -207,9 +209,12 @@ def _transition(payload, target, source_pos, boundary_key, comparator, lookback)
     if transition_close is None or transition_boundary is None:
         return None
 
-    # _target_run_start 已保证目标色段至少有两根；只在转色后的前两根
-    # 连续目标色 K 中寻找严格突破，避免将数日后的无关波动归为本次转折。
-    for confirmation_index in (start, start + 1):
+    # _target_run_start 已保证目标色段至少有两根，且转折前一根、首根
+    # 目标色 K 都在 lookback 窗口内。遍历该连续色段，但不跨出窗口或
+    # 跨越任何灰/反向 K，避免把无关的后续波动归为本次转折。
+    for confirmation_index in range(start, min(n, start + lookback)):
+        if bar_color(payload, confirmation_index) != target:
+            break
         confirmation_close = _close(payload, confirmation_index)
         confirmation_boundary = _number(payload[boundary_key][confirmation_index])
         if (
@@ -342,7 +347,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
         if long_turn:
             result["short_to_long"].append(_make_item(key, payload, contract, latest, ma7, atr14, **long_turn))
     else:
-        # 日线转换：转色后前两根连续目标色 K 内完成严格突破。
+        # 日线转换：最近窗口内的连续目标色段完成严格突破。
         short_turn = _transition(payload, "blue", 1, "EE", lambda price, line: price < line, lookback)
         if short_turn:
             (
@@ -433,8 +438,8 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
                 "short_trend": "POS=-1; sorted by score ascending",
             },
             "daily_transitions": {
-                "long_to_short": "red->blue after POS=1; latest blue run has at least 2 bars; close<EE on either of the first 2 blue bars",
-                "short_to_long": "blue->red after POS=-1; latest red run has at least 2 bars; close>PP on either of the first 2 red bars",
+                "long_to_short": "red->blue after POS=1; latest blue run has at least 2 bars; close<EE anywhere in the continuous blue run within lookback",
+                "short_to_long": "blue->red after POS=-1; latest red run has at least 2 bars; close>PP anywhere in the continuous red run within lookback",
             },
             "trend_band_warnings": {
                 "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
