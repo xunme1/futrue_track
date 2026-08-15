@@ -12,6 +12,7 @@ import pandas as pd
 
 from ..core.mylang import (every, hhv, hhvbars, hv, intpart, llv, llvbars, lv, ma,
                            ref, sma_cn)
+from .weekly_permissions import current_weekly_permissions
 
 STRATEGY_NAME = "zxgl_xdd"
 DESCRIPTION = "周线定方向 → M头/W底突破 → 盘整过滤 → 南华指数强弱 → OPI资金确认"
@@ -26,29 +27,9 @@ def compute(fut_d, fut_w, idx_d, p):
     SH = p["shoulder_min_bars"]     # 8
 
     # ---------- 1. 周线过滤（ZXGL）----------
-    # 麦语言 #IMPORT[WEEK,1,ZXGL]：用"最近一根已完成周线"，避免回测未来函数
-    w = fut_w.copy()
-    w["ma7"] = ma(w["close"], p["weekly_ma"])
-    w["pz"] = (hhv(w["high"], p["panzheng_range"]) - llv(w["low"], p["panzheng_range"])) / w["ma7"] < p["panzheng_threshold"]
-    w["AA1"] = w["close"] < w["ma7"]          # 周线收盘 < 7周均线 → 空头许可
-    w["ZZ1"] = w["close"] > w["ma7"]          # 周线收盘 > 7周均线 → 多头许可
-    w["TT1"] = ~w["pz"]                       # 周线非盘整许可
-    # 按周对齐：每个日线 bar 取其上一根已完成周线的值
-    wk = w[["AA1", "ZZ1", "TT1"]].copy()
-    wk["weekkey"] = wk.index.to_period("W")
-    week_prev = {}
-    keys = list(wk["weekkey"])
-    for i, k in enumerate(keys):
-        week_prev[k] = wk.iloc[i - 1] if i > 0 else None
-    day_keys = df.index.to_period("W")
-    AA1, ZZ1, TT1 = [], [], []
-    for k in day_keys:
-        row = week_prev.get(k)
-        if row is None:
-            AA1.append(False); ZZ1.append(False); TT1.append(False)
-        else:
-            AA1.append(bool(row["AA1"])); ZZ1.append(bool(row["ZZ1"])); TT1.append(bool(row["TT1"]))
-    df["AA1"], df["ZZ1"], df["TT1"] = AA1, ZZ1, TT1
+    # 麦语言 #IMPORT[WEEK,1,ZXGL] 引用当周实时周线；本地按当前已完成日K聚合，
+    # 避免将周五的最终数据倒灌给同周较早日线。
+    df["AA1"], df["ZZ1"], df["TT1"] = current_weekly_permissions(df, fut_w, p)
 
     # ---------- 2. 本品种 7 日位置 / 盘整 ----------
     HH7, LL7 = hhv(H, p["rs_window"]), llv(L, p["rs_window"])

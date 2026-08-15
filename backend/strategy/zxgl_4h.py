@@ -1,65 +1,43 @@
 # -*- coding: utf-8 -*-
 """4-hour variant of the ZXGL/XDD strategy.
 
-It keeps the original M/W channel and OPI formulas, but replaces the weekly
-filter with the *previous completed daily bar*.  Relative-strength-to-NHCI is
-intentionally absent: BAR_COLOR is only the current bar's price direction.
+It keeps the original M/W channel and OPI formulas, using the current weekly
+state built from completed 4-hour bars as its direction filter. Relative
+strength to NHCI is intentionally absent: BAR_COLOR is only the current bar's
+price direction.
 """
 import math
 
 import pandas as pd
 
 from ..core.mylang import every, hhv, hhvbars, hv, intpart, llv, llvbars, lv, ma, ref, sma_cn
+from .weekly_permissions import current_weekly_permissions
 
 STRATEGY_NAME = "zxgl_4h"
-DESCRIPTION = "日线定方向 → 4小时 M头/W底突破 → 盘整过滤 → OPI资金确认"
+DESCRIPTION = "周线定方向 → 4小时 M头/W底突破 → 盘整过滤 → OPI资金确认"
 
 
-def _daily_permissions(df, daily, p):
-    """Map every intraday bar to the prior completed trading day's state."""
-    day = daily.copy()
-    day.index = pd.to_datetime(day.index).normalize()
-    day = day[~day.index.duplicated(keep="last")].sort_index()
-    day["ma7"] = ma(day["close"], p["weekly_ma"])
-    day["pz"] = (
-        (hhv(day["high"], p["panzheng_range"]) - llv(day["low"], p["panzheng_range"])) / day["ma7"]
-        < p["panzheng_threshold"]
-    )
-    states = pd.DataFrame({
-        "AA1": day["close"] < day["ma7"],
-        "ZZ1": day["close"] > day["ma7"],
-        "TT1": ~day["pz"],
-    }, index=day.index)
-
-    if "trading_date" in df.columns:
-        trading_dates = pd.to_datetime(df["trading_date"]).dt.normalize()
-    else:
-        trading_dates = pd.Series(pd.to_datetime(df.index).normalize(), index=df.index)
-
-    aa1, zz1, tt1 = [], [], []
-    for trading_date in trading_dates:
-        # ``side=left`` deliberately excludes this day's daily bar.
-        pos = states.index.searchsorted(trading_date, side="left") - 1
-        if pos < 0:
-            aa1.append(False); zz1.append(False); tt1.append(False)
-        else:
-            row = states.iloc[pos]
-            aa1.append(bool(row["AA1"])); zz1.append(bool(row["ZZ1"])); tt1.append(bool(row["TT1"]))
-    return aa1, zz1, tt1
+def _weekly_permissions(df, weekly, p):
+    """Compatibility wrapper for the current-week Wenhua permission."""
+    return current_weekly_permissions(df, weekly, p)
 
 
-def compute(fut_4h, fut_daily, p):
-    """Compute 4-hour signals from completed 240-minute bars and daily filters."""
+def compute(fut_4h, fut_weekly, p):
+    """Compute 4-hour signals from completed bars and current-week filters."""
     df = fut_4h.copy()
     C, O, H, L, OPI = df["close"], df["open"], df["high"], df["low"], df["ccl"]
     G1, G2 = p["G1"], p["G2"]
     LB, SH = p["lookback_shape"], p["shoulder_min_bars"]
 
-    df["AA1"], df["ZZ1"], df["TT1"] = _daily_permissions(df, fut_daily, p)
+    # The 4-hour consolidation gate is deliberately independent from the
+    # daily/weekly 3% threshold.  A smooth intraday trend often stays within
+    # 3% over seven bars, so use the explicitly configured 4-hour threshold.
+    panzheng_threshold = p.get("panzheng_threshold_4h", 0.005)
+    df["AA1"], df["ZZ1"], df["TT1"] = _weekly_permissions(df, fut_weekly, p)
     HH7, LL7 = hhv(H, p["rs_window"]), llv(L, p["rs_window"])
     MA7 = ma(C, p["panzheng_range"])
     df["ZD"] = (HH7 + LL7) / 2
-    df["PANZHENG"] = (HH7 - LL7) / MA7 < p["panzheng_threshold"]
+    df["PANZHENG"] = (HH7 - LL7) / MA7 < panzheng_threshold
     df["BAR_COLOR"] = pd.Series("gray", index=df.index)
     df.loc[C > O, "BAR_COLOR"] = "red"
     df.loc[C < O, "BAR_COLOR"] = "blue"

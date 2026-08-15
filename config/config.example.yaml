@@ -26,6 +26,8 @@ strategy:
   shoulder_min_bars: 8
   panzheng_range: 7
   panzheng_threshold: 0.03
+  # 4小时使用更低的盘整阈值；缺省同样为 0.005，日线/周线仍为 0.03。
+  panzheng_threshold_4h: 0.005
   weekly_ma: 7
   rs_window: 7
   rs_strong_up: 1.5

@@ -107,8 +107,8 @@ def _run_4h(store, watchlist, start):
     for entry in watchlist:
         symbol, source = entry["symbol"], entry["source"]
         bars = store.read(source, "futures_4h", symbol)
-        daily = store.read(source, "futures_daily", symbol)
-        df = strategy.compute(bars, daily, PARAMS)
+        weekly = store.read(source, "futures_weekly", symbol)
+        df = strategy.compute(bars, weekly, PARAMS)
         export(symbol, df.loc[start:], "4h")
 
 

@@ -210,7 +210,7 @@ export default function LegendModal({ open, onClose, timeframe }: Props) {
         <h2>{timeframe === '4h' ? '4 小时看板标记详解' : '看板标记详解（文华麦语言策略复刻）'}</h2>
         <div className="legend-intro">
           {timeframe === '4h'
-            ? '策略逻辑：上一已完成日线定方向 → 4小时 M头/W底形态突破进场 → 盘整过滤 → 持仓量验证资金。红 K 为上涨、蓝 K 为下跌；不含南华指数强弱对比。'
+            ? '策略逻辑：当周实时周线定方向 → 4小时 M头/W底形态突破进场 → 盘整过滤 → 持仓量验证资金。红 K 为上涨、蓝 K 为下跌；不含南华指数强弱对比。'
             : '策略逻辑一句话：周线定方向 → M头/W底形态突破进场 → 盘整过滤避震荡 → 对比南华商品指数看强弱 → 持仓量验证资金。鼠标悬停任意 K 线可查看当日全部状态。'}
         </div>
         {(timeframe === '4h' ? SECTIONS.filter((sec) => !sec.title.startsWith('一、') && !sec.title.startsWith('五、')) : SECTIONS).map((sec) => (

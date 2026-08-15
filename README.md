@@ -112,7 +112,7 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 
 ### 4 小时看板
 
-4 小时版使用米筐原生 `240m` 行情，保留 M/W 通道、开平仓和 OPI 资金信号；以**上一已完成日线**作方向过滤，不使用南华指数。红 K 表示上涨、蓝 K 表示下跌。日线产物仍在 `data/`，4 小时产物独立位于 `data/4h/`。
+4 小时版使用米筐原生 `240m` 行情，保留 M/W 通道、开平仓和 OPI 资金信号；以**当周实时周线**作方向过滤，不使用南华指数。红 K 表示上涨、蓝 K 表示下跌。日线产物仍在 `data/`，4 小时产物独立位于 `data/4h/`。
 
 ```bash
 .venv/Scripts/python -m backend.pipeline.download --timeframe all
@@ -157,7 +157,9 @@ crontab -e
 
 ### 4 小时看板更新与前端构建
 
-`tools/refresh_4h.sh` 只更新米筐 `240m` 行情、4 小时信号 JSON/CSV 与 4 小时筛选榜单；它不会触碰日线产物。建议在**上海时间工作日 15:35**执行，留出日盘最后一根 K 线收线和米筐入库的缓冲时间：
+`tools/refresh_4h.sh` 只更新米筐 `240m` 行情、4 小时信号 JSON/CSV 与 4 小时筛选榜单；当周周线许可由已完成的 4 小时 K 本地聚合，已缓存的周线仅提供历史基准，因此首次运行前需先完成一次日线下载。建议在**上海时间工作日 15:35**执行，留出日盘最后一根 K 线收线和米筐入库的缓冲时间：
+
+4 小时盘整过滤默认使用 `panzheng_threshold_4h: 0.005`（近 7 根振幅/均价不足 0.5% 才视为盘整）；日线与周线继续使用 `panzheng_threshold: 0.03`。可在服务器的 `config/config.yaml` 中分别调整。
 
 ```bash
 chmod 700 /opt/futrue_track/tools/refresh_4h.sh /opt/futrue_track/tools/build_frontend.sh

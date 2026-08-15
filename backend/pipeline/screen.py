@@ -42,6 +42,10 @@ BUCKET_LABELS = {
     "long_support_warning": "多头支撑预警",
 }
 
+# A confirmed four-hour reversal remains actionable through its confirming bar
+# and the following eight completed bars.
+FOUR_HOUR_SIGNAL_RETENTION_BARS = 9
+
 
 def _number(value):
     """将有效数值转为 float；None、NaN 和非数值返回 None。"""
@@ -233,44 +237,60 @@ def _transition(payload, target, source_pos, boundary_key, comparator, lookback)
     return None
 
 
-def _recent_band(payload, source_pos, boundary_key, window=9):
+def _recent_band(payload, source_pos, boundary_key, window=9, latest=None):
     """Find the newest visible trend band in the current nine-bar window.
 
     Channels are calculated for every bar, but a pressure/support *band* is
     visible only while the strategy was holding the corresponding direction.
     """
     n = len(payload["dates"])
-    for index in range(n - 1, max(-1, n - window - 1), -1):
+    latest = n - 1 if latest is None else latest
+    for index in range(latest, max(-1, latest - window - 1), -1):
         boundary = _number(payload[boundary_key][index])
         if payload["POS"][index] == source_pos and boundary is not None:
             return index, boundary
     return None
 
 
-def _four_hour_transition(payload, target):
-    """Evaluate the configured four-hour reversal signal and enhancement stars."""
-    n, latest = len(payload["dates"]), len(payload["dates"]) - 1
-    close = _close(payload, latest)
-    if close is None or bar_color(payload, latest) != target:
+def _four_hour_transition_at(payload, target, signal_index):
+    """Evaluate one completed four-hour reversal bar and its enhancement stars."""
+    n = len(payload["dates"])
+    close = _close(payload, signal_index)
+    if close is None or bar_color(payload, signal_index) != target:
         return None
 
     # 空转多：最近9根有空头压力带，当前上涨红K收于压力带上方。
     if target == "red":
-        band = _recent_band(payload, -1, "PP")
+        band = _recent_band(payload, -1, "PP", latest=signal_index)
         if band is None or close <= band[1]:
             return None
         prior_color, funding, label, boundary_key = "blue", "SB", "空转多", "PP"
         reasons = ("前8根含偏弱K", "前8根含增仓笑脸")
     # 多转空：最近9根有多头支撑带，当前下跌蓝K收于支撑带下方。
     else:
-        band = _recent_band(payload, 1, "EE")
+        band = _recent_band(payload, 1, "EE", latest=signal_index)
         if band is None or close >= band[1]:
             return None
         prior_color, funding, label, boundary_key = "red", "DSBE", "多转空", "EE"
         reasons = ("前8根含偏强K", "前8根含减仓倒手指")
 
-    prior_start = max(0, latest - 8)
-    prior_indices = range(prior_start, latest)  # excludes the current confirming bar
+    # A run can remain beyond the same band for several bars. This is one
+    # reversal, not a new signal on every blue/red bar: retain only its first
+    # strict band break. The preceding bar is compared to its then-known band
+    # so a moving channel cannot create a later duplicate confirmation.
+    if signal_index > 0:
+        previous_close = _close(payload, signal_index - 1)
+        previous_band = _recent_band(
+            payload, -1 if target == "red" else 1, boundary_key, latest=signal_index - 1
+        )
+        if previous_close is not None and previous_band is not None:
+            if target == "red" and previous_close > previous_band[1]:
+                return None
+            if target == "blue" and previous_close < previous_band[1]:
+                return None
+
+    prior_start = max(0, signal_index - 8)
+    prior_indices = range(prior_start, signal_index)  # excludes the current confirming bar
     flags = [
         any(bar_color(payload, i) == prior_color for i in prior_indices),
         any(bool(payload.get(funding, [False] * n)[i]) for i in prior_indices),
@@ -278,13 +298,36 @@ def _four_hour_transition(payload, target):
     star_reasons = [reason for enabled, reason in zip(flags, reasons) if enabled]
     return {
         "signal_name": label,
-        "signal_date": payload["dates"][latest],
+        "signal_date": payload["dates"][signal_index],
         "trend_band_date": payload["dates"][band[0]],
         "transition_boundary": boundary_key,
         "transition_boundary_value": band[1],
         "stars": len(star_reasons),
         "star_reasons": star_reasons,
     }
+
+
+def _four_hour_transition(payload, target):
+    """Find the most recent confirmed reversal that is still within 9 bars."""
+    latest = len(payload["dates"]) - 1
+    # A retained reversal becomes stale as soon as the strategy is holding the
+    # original direction again (for example, a fresh SK after an 空转多 setup).
+    source_pos = -1 if target == "red" else 1
+    if payload["POS"][latest] == source_pos:
+        return None
+
+    invalidating_entry = "SK" if target == "red" else "BK"
+    earliest = max(-1, latest - FOUR_HOUR_SIGNAL_RETENTION_BARS)
+    for signal_index in range(latest, earliest, -1):
+        result = _four_hour_transition_at(payload, target, signal_index)
+        reentered_source = any(
+            signal.get("type") == invalidating_entry and signal_index < signal.get("i", -1) <= latest
+            for signal in payload.get("signals", [])
+        )
+        if result and not reentered_source:
+            result["bars_since_signal"] = latest - signal_index
+            return result
+    return None
 
 
 def screen_payload(key, payload, contract, lookback=8, atr_window=14):
@@ -440,6 +483,10 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             "daily_transitions": {
                 "long_to_short": "red->blue after POS=1; latest blue run has at least 2 bars; close<EE anywhere in the continuous blue run within lookback",
                 "short_to_long": "blue->red after POS=-1; latest red run has at least 2 bars; close>PP anywhere in the continuous red run within lookback",
+            },
+            "four_hour_transitions": {
+                "long_to_short": "9根内有多头支撑带；确认蓝K收盘<EE；确认后保留9根4小时K，重新开多则失效",
+                "short_to_long": "9根内有空头压力带；确认红K收盘>PP；确认后保留9根4小时K，重新开空则失效",
             },
             "trend_band_warnings": {
                 "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",

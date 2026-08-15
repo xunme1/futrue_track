@@ -170,7 +170,7 @@ export function buildOption(d: SignalData): EChartsOption {
           if (note) h += `<span>（${note}）</span>`
           h += '<br>'
         }
-        h += `${isFourHour ? '日线' : '周线'}许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`
+        h += `当周周线许可: 空${d.AA1[i] ? '✓' : '✗'} 多${d.ZZ1[i] ? '✓' : '✗'} 非盘整${d.TT1[i] ? '✓' : '✗'}`
         return h
       },
     },

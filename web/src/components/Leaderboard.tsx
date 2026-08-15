@@ -112,7 +112,7 @@ export default function Leaderboard({
               <b>{item.name}</b>
               <small>{item.symbol}</small>
               {item.transition_date && <em>转折 {item.transition_date}</em>}
-              {item.signal_date && <em title={item.star_reasons?.join('；')}>标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
+              {item.signal_date && <em title={item.star_reasons?.join('；')}>确认 {item.signal_date} · 标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
             </span>
             <span className="leaderboard-values">
               <b className={item.score >= 0 ? 'score-up' : 'score-down'}>{scoreText(item.score)}</b>

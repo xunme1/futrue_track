@@ -107,6 +107,7 @@ export interface ScreeningItem {
   signal_name?: '空转多' | '多转空'
   signal_date?: string
   trend_band_date?: string
+  bars_since_signal?: number
   stars?: number
   star_reasons?: string[]
 }
