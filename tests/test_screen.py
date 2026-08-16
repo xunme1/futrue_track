@@ -58,11 +58,13 @@ class ScreenTests(unittest.TestCase):
         down["EE"][14] = 95
         down["EE"][15] = 95
         down["EE"][16] = 95
+        down["POS"][16] = -1
         hits = screen_payload("down", down, CONTRACT)
         self.assertEqual(hits["long_to_short"][0]["transition_date"], down["dates"][14])
         self.assertEqual(hits["long_to_short"][0]["transition_close"], 98)
         self.assertEqual(hits["long_to_short"][0]["confirmation_date"], down["dates"][16])
         self.assertEqual(hits["long_to_short"][0]["confirmation_close"], 90)
+        self.assertEqual(hits["short_trend"][0]["trend_transition_label"], "多转空")
 
         equality = payload(n=17)
         equality["PQ"][13], equality["POS"][13] = True, 1
@@ -93,10 +95,12 @@ class ScreenTests(unittest.TestCase):
         up["PP"][14] = 105
         up["PP"][15] = 105
         up["PP"][16] = 105
+        up["POS"][16] = 1
         hits = screen_payload("up", up, CONTRACT)
         self.assertEqual(hits["short_to_long"][0]["transition_date"], up["dates"][14])
         self.assertEqual(hits["short_to_long"][0]["transition_boundary"], "PP")
         self.assertEqual(hits["short_to_long"][0]["confirmation_date"], up["dates"][16])
+        self.assertEqual(hits["long_trend"][0]["trend_transition_label"], "空转多")
 
         warning = payload(close=100)
         warning["PQ"][-1], warning["POS"][-1] = True, -1
@@ -127,12 +131,16 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(rows[0]["bucket"], "long_to_short_warning")
         self.assertEqual(rows[0]["bucket_name"], "多转空预警")
 
-    def test_trend_band_warnings_require_extreme_and_boundary_hold(self):
+    def test_trend_band_warnings_retain_all_retests_in_latest_nine_bars(self):
         pressure = payload(close=100)
-        pressure["POS"][-1] = -1
-        pressure["KK"][-1], pressure["PP"][-1] = 95, 105
-        pressure["ohlc"][-1] = [99, 100, 98, 104]
-        self.assertEqual(len(screen_payload("pressure", pressure, CONTRACT)["short_pressure_warning"]), 1)
+        for index in (7, 14):
+            pressure["POS"][index] = -1
+            pressure["KK"][index], pressure["PP"][index] = 95, 105
+            pressure["ohlc"][index] = [99, 100, 98, 104]
+        pressure_hits = screen_payload("pressure", pressure, CONTRACT)["short_pressure_warning"]
+        self.assertEqual(len(pressure_hits), 1)
+        self.assertEqual(pressure_hits[0]["retest_dates"], [pressure["dates"][7], pressure["dates"][14]])
+        self.assertEqual(pressure_hits[0]["retest_count"], 2)
 
         pressure_break = payload(close=106)
         pressure_break["POS"][-1] = -1
@@ -141,10 +149,13 @@ class ScreenTests(unittest.TestCase):
         self.assertFalse(screen_payload("pressure-break", pressure_break, CONTRACT)["short_pressure_warning"])
 
         support = payload(close=100)
-        support["POS"][-1] = 1
-        support["EE"][-1], support["DD"][-1] = 95, 105
-        support["ohlc"][-1] = [99, 100, 97, 103]
-        self.assertEqual(len(screen_payload("support", support, CONTRACT)["long_support_warning"]), 1)
+        for index in (8, 15):
+            support["POS"][index] = 1
+            support["EE"][index], support["DD"][index] = 95, 105
+            support["ohlc"][index] = [99, 100, 97, 103]
+        support_hits = screen_payload("support", support, CONTRACT)["long_support_warning"]
+        self.assertEqual(len(support_hits), 1)
+        self.assertEqual(support_hits[0]["retest_dates"], [support["dates"][8], support["dates"][15]])
 
         support_at_lower_edge = payload(close=95)
         support_at_lower_edge["POS"][-1] = 1

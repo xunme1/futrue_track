@@ -104,6 +104,10 @@ export interface ScreeningItem {
   confirmation_date?: string
   confirmation_close?: number
   confirmation_boundary_value?: number
+  retest_dates?: string[]
+  retest_count?: number
+  trend_transition?: 'short_to_long' | 'long_to_short'
+  trend_transition_label?: '空转多' | '多转空'
   signal_name?: '空转多' | '多转空'
   signal_date?: string
   trend_band_date?: string

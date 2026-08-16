@@ -42,6 +42,8 @@ BUCKET_LABELS = {
     "long_support_warning": "多头支撑预警",
 }
 
+TREND_BAND_WARNING_LOOKBACK = 9
+
 # A confirmed four-hour reversal remains actionable through its confirming bar
 # and the following eight completed bars.
 FOUR_HOUR_SIGNAL_RETENTION_BARS = 9
@@ -146,6 +148,38 @@ def _low(payload, index):
 def _high(payload, index):
     bar = payload["ohlc"][index]
     return _number(bar[3]) if isinstance(bar, (list, tuple)) and len(bar) >= 4 else None
+
+
+def _trend_band_retest_dates(payload, kind, window=TREND_BAND_WARNING_LOOKBACK):
+    """Return every pressure/support retest date in the latest completed window.
+
+    A contract is listed once per warning bucket even when it retests a band
+    repeatedly.  The caller retains all matching dates so the dashboard can
+    show whether the same band was tested once or several times.
+    """
+    n = len(payload["dates"])
+    dates = []
+    for index in range(max(0, n - window), n):
+        close = _close(payload, index)
+        if close is None:
+            continue
+        if kind == "pressure":
+            high, kk, pp = _high(payload, index), _number(payload["KK"][index]), _number(payload["PP"][index])
+            matched = (
+                payload["POS"][index] == -1 and high is not None and kk is not None and pp is not None
+                and kk <= high <= pp and kk <= close <= pp
+            )
+        elif kind == "support":
+            low, ee, dd = _low(payload, index), _number(payload["EE"][index]), _number(payload["DD"][index])
+            matched = (
+                payload["POS"][index] == 1 and low is not None and ee is not None and dd is not None
+                and ee <= low <= dd and ee < close <= dd
+            )
+        else:
+            raise ValueError(f"Unsupported trend-band retest kind: {kind}")
+        if matched:
+            dates.append(payload["dates"][index])
+    return dates
 
 
 def _make_item(key, payload, contract, index, ma7, atr14, **extra):
@@ -365,22 +399,21 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     if pos == -1 and color == "red" and kk is not None and pp is not None and kk <= close < pp:
         result["short_to_long_warning"].append(latest_item)
 
-    # 趋势带预警：极值进入趋势带，收盘仍守住该趋势带的有效边界。
-    # 空头压力带为 KK~PP；最高价与收盘均在带内，且收盘没有上破 PP。
-    high = _high(payload, latest)
-    if (
-        pos == -1 and high is not None and kk is not None and pp is not None
-        and kk <= high <= pp and kk <= close <= pp
-    ):
-        result["short_pressure_warning"].append(latest_item)
-
-    # 多头支撑带为 EE~DD；最低价、收盘均在带内，且收盘严格高于下沿 EE。
-    low = _low(payload, latest)
-    if (
-        pos == 1 and low is not None and ee is not None and dd is not None
-        and ee <= low <= dd and ee < close <= dd
-    ):
-        result["long_support_warning"].append(latest_item)
+    # 日线趋势带预警：最近 9 根内任一根回踩即可入选，并保留全部日期。
+    # 4 小时看板仍只展示转换榜单，不增加这两类预警。
+    if "bar_colors" not in payload:
+        pressure_dates = _trend_band_retest_dates(payload, "pressure")
+        if pressure_dates:
+            result["short_pressure_warning"].append(_make_item(
+                key, payload, contract, latest, ma7, atr14,
+                retest_dates=pressure_dates, retest_count=len(pressure_dates),
+            ))
+        support_dates = _trend_band_retest_dates(payload, "support")
+        if support_dates:
+            result["long_support_warning"].append(_make_item(
+                key, payload, contract, latest, ma7, atr14,
+                retest_dates=support_dates, retest_count=len(support_dates),
+            ))
 
     if "bar_colors" in payload:
         short_turn = _four_hour_transition(payload, "blue")
@@ -425,6 +458,15 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
                 confirmation_date=payload["dates"][confirmation_index],
                 confirmation_close=confirmation_close, confirmation_boundary_value=confirmation_boundary,
             ))
+
+    # 趋势榜仍按 score 排序；只给同时命中对应转换的当前趋势加星标，
+    # 便于识别“刚完成反转且已进入该方向持仓”的品种。
+    if result["long_trend"] and result["short_to_long"]:
+        result["long_trend"][0]["trend_transition"] = "short_to_long"
+        result["long_trend"][0]["trend_transition_label"] = "空转多"
+    if result["short_trend"] and result["long_to_short"]:
+        result["short_trend"][0]["trend_transition"] = "long_to_short"
+        result["short_trend"][0]["trend_transition_label"] = "多转空"
     return result
 
 
@@ -489,8 +531,9 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
                 "short_to_long": "9根内有空头压力带；确认红K收盘>PP；确认后保留9根4小时K，重新开空则失效",
             },
             "trend_band_warnings": {
-                "short_pressure_warning": "POS=-1; KK<=high<=PP; KK<=close<=PP",
-                "long_support_warning": "POS=1; EE<=low<=DD; EE<close<=DD",
+                "lookback": TREND_BAND_WARNING_LOOKBACK,
+                "short_pressure_warning": "within latest 9 bars: POS=-1; KK<=high<=PP; KK<=close<=PP",
+                "long_support_warning": "within latest 9 bars: POS=1; EE<=low<=DD; EE<close<=DD",
             },
         },
         "scanned_symbols": scanned,
@@ -544,6 +587,15 @@ def print_report(report):
             line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.3f}"
             if "transition_date" in item:
                 line += f" 转折={item['transition_date']} {item['transition_from']}→{item['transition_to']}"
+            if "confirmation_date" in item:
+                action = "突破 PP" if item.get("transition_boundary") == "PP" else "跌破 EE"
+                line += f" {action}={item['confirmation_date']}"
+            if "retest_dates" in item:
+                line += f" 回踩={','.join(item['retest_dates'])}"
+            if "trend_transition_label" in item:
+                # Keep CLI output compatible with Windows GBK terminals; the
+                # dashboard itself renders the visual emoji star.
+                line += f" *{item['trend_transition_label']}"
             print(line)
 
 

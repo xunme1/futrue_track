@@ -111,7 +111,12 @@ export default function Leaderboard({
             <span className="leaderboard-name">
               <b>{item.name}</b>
               <small>{item.symbol}</small>
+              {item.trend_transition_label && <em>🌟 {item.trend_transition_label}</em>}
               {item.transition_date && <em>转折 {item.transition_date}</em>}
+              {item.confirmation_date && <em title={`确认收盘 ${closeText(item.confirmation_close ?? Number.NaN)}；${item.transition_boundary ?? '趋势带'} ${closeText(item.confirmation_boundary_value ?? Number.NaN)}`}>
+                {item.transition_boundary === 'PP' ? '突破 PP' : '跌破 EE'} {item.confirmation_date}
+              </em>}
+              {item.retest_dates?.length ? <em>回踩 {item.retest_dates.join('、')}</em> : null}
               {item.signal_date && <em title={item.star_reasons?.join('；')}>确认 {item.signal_date} · 标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
             </span>
             <span className="leaderboard-values">
