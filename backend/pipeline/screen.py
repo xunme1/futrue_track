@@ -167,13 +167,13 @@ def _trend_band_retest_dates(payload, kind, window=TREND_BAND_WARNING_LOOKBACK):
             high, kk, pp = _high(payload, index), _number(payload["KK"][index]), _number(payload["PP"][index])
             matched = (
                 payload["POS"][index] == -1 and high is not None and kk is not None and pp is not None
-                and kk <= high <= pp and kk <= close <= pp
+                and kk <= high <= pp and close < pp
             )
         elif kind == "support":
             low, ee, dd = _low(payload, index), _number(payload["EE"][index]), _number(payload["DD"][index])
             matched = (
                 payload["POS"][index] == 1 and low is not None and ee is not None and dd is not None
-                and ee <= low <= dd and ee < close <= dd
+                and ee <= low <= dd and close > ee
             )
         else:
             raise ValueError(f"Unsupported trend-band retest kind: {kind}")
@@ -532,8 +532,8 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             },
             "trend_band_warnings": {
                 "lookback": TREND_BAND_WARNING_LOOKBACK,
-                "short_pressure_warning": "within latest 9 bars: POS=-1; KK<=high<=PP; KK<=close<=PP",
-                "long_support_warning": "within latest 9 bars: POS=1; EE<=low<=DD; EE<close<=DD",
+                "short_pressure_warning": "within latest 9 bars: POS=-1; KK<=high<=PP; close<PP",
+                "long_support_warning": "within latest 9 bars: POS=1; EE<=low<=DD; close>EE",
             },
         },
         "scanned_symbols": scanned,

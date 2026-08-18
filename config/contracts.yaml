@@ -338,3 +338,15 @@ contracts:
   category: 股指
   exchange: SSE
   extra: true
+- symbol: 000016.XSHG
+  source: ricequant
+  name: 上证50指数
+  category: 股指
+  exchange: SSE
+  extra: true
+- symbol: 588000.XSHG
+  source: ricequant
+  name: 科创50ETF
+  category: ETF
+  exchange: SSE
+  extra: true

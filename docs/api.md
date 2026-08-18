@@ -87,7 +87,7 @@
 | `long_to_short` | 最近 8 根内多头转空，蓝 K 连续且跌破 EE | score 升序 |
 | `short_to_long` | 最近 8 根内空头转多，红 K 连续且突破 PP | score 降序 |
 
-`buckets` 还包含四类预警：`long_to_short_warning`、`short_to_long_warning`、`short_pressure_warning` 与 `long_support_warning`。前两类为变色但未突破边界的转换预警；后两类分别表示空头压力带回踩（`POS=-1; KK≤high≤PP; KK≤close≤PP`）与多头支撑带回踩（`POS=1; EE≤low≤DD; EE<close≤DD`）。首页榜单预警区只展示后两类趋势带预警。
+`buckets` 还包含四类预警：`long_to_short_warning`、`short_to_long_warning`、`short_pressure_warning` 与 `long_support_warning`。前两类为变色但未突破边界的转换预警；后两类分别表示空头压力带回踩（`POS=-1; KK≤high≤PP; close<PP`）与多头支撑带回踩（`POS=1; EE≤low≤DD; close>EE`）。首页榜单预警区只展示后两类趋势带预警。
 
 每个条目均包含 `key`、`symbol`、`name`、`date`、`close`、`ma7`、`atr14`、`score`、`PQ`、`PR`、`POS`、`DD`、`EE`、`KK`、`PP`。其中 `score = (close - ma7) / atr14`。转换条目还包含 `transition_date`、`transition_close`、`transition_boundary` 和 `transition_boundary_value`，用于定位首次变色及突破边界。
 

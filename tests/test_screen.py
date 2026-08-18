@@ -148,6 +148,18 @@ class ScreenTests(unittest.TestCase):
         pressure_break["ohlc"][-1] = [100, 106, 99, 104]
         self.assertFalse(screen_payload("pressure-break", pressure_break, CONTRACT)["short_pressure_warning"])
 
+        pressure_closed_below_band = payload(close=94)
+        pressure_closed_below_band["POS"][-1] = -1
+        pressure_closed_below_band["KK"][-1], pressure_closed_below_band["PP"][-1] = 95, 105
+        pressure_closed_below_band["ohlc"][-1] = [99, 94, 93, 104]
+        self.assertTrue(screen_payload("pressure-closed-below-band", pressure_closed_below_band, CONTRACT)["short_pressure_warning"])
+
+        pressure_at_upper_edge = payload(close=105)
+        pressure_at_upper_edge["POS"][-1] = -1
+        pressure_at_upper_edge["KK"][-1], pressure_at_upper_edge["PP"][-1] = 95, 105
+        pressure_at_upper_edge["ohlc"][-1] = [100, 105, 99, 104]
+        self.assertFalse(screen_payload("pressure-at-upper-edge", pressure_at_upper_edge, CONTRACT)["short_pressure_warning"])
+
         support = payload(close=100)
         for index in (8, 15):
             support["POS"][index] = 1
@@ -162,6 +174,12 @@ class ScreenTests(unittest.TestCase):
         support_at_lower_edge["EE"][-1], support_at_lower_edge["DD"][-1] = 95, 105
         support_at_lower_edge["ohlc"][-1] = [96, 95, 95, 100]
         self.assertFalse(screen_payload("support-at-lower-edge", support_at_lower_edge, CONTRACT)["long_support_warning"])
+
+        support_closed_above_band = payload(close=106)
+        support_closed_above_band["POS"][-1] = 1
+        support_closed_above_band["EE"][-1], support_closed_above_band["DD"][-1] = 95, 105
+        support_closed_above_band["ohlc"][-1] = [100, 106, 97, 107]
+        self.assertTrue(screen_payload("support-closed-above-band", support_closed_above_band, CONTRACT)["long_support_warning"])
 
 
 if __name__ == "__main__":
