@@ -137,6 +137,9 @@ class ScreenTests(unittest.TestCase):
             pressure["POS"][index] = -1
             pressure["KK"][index], pressure["PP"][index] = 95, 105
             pressure["ohlc"][index] = [99, 100, 98, 104]
+        pressure["POS"][-1] = -1  # 当前仍持空、压力带有效，但自身不是一次回踩。
+        pressure["KK"][-1], pressure["PP"][-1] = 95, 105
+        pressure["ohlc"][-1] = [100, 100, 99, 106]
         pressure_hits = screen_payload("pressure", pressure, CONTRACT)["short_pressure_warning"]
         self.assertEqual(len(pressure_hits), 1)
         self.assertEqual(pressure_hits[0]["retest_dates"], [pressure["dates"][7], pressure["dates"][14]])
@@ -161,13 +164,16 @@ class ScreenTests(unittest.TestCase):
         self.assertFalse(screen_payload("pressure-at-upper-edge", pressure_at_upper_edge, CONTRACT)["short_pressure_warning"])
 
         support = payload(close=100)
-        for index in (8, 15):
+        for index in (7, 14):
             support["POS"][index] = 1
             support["EE"][index], support["DD"][index] = 95, 105
             support["ohlc"][index] = [99, 100, 97, 103]
+        support["POS"][-1] = 1  # 当前仍持多、支撑带有效，但自身不是一次回踩。
+        support["EE"][-1], support["DD"][-1] = 95, 105
+        support["ohlc"][-1] = [100, 100, 94, 101]
         support_hits = screen_payload("support", support, CONTRACT)["long_support_warning"]
         self.assertEqual(len(support_hits), 1)
-        self.assertEqual(support_hits[0]["retest_dates"], [support["dates"][8], support["dates"][15]])
+        self.assertEqual(support_hits[0]["retest_dates"], [support["dates"][7], support["dates"][14]])
 
         support_at_lower_edge = payload(close=95)
         support_at_lower_edge["POS"][-1] = 1
@@ -180,6 +186,18 @@ class ScreenTests(unittest.TestCase):
         support_closed_above_band["EE"][-1], support_closed_above_band["DD"][-1] = 95, 105
         support_closed_above_band["ohlc"][-1] = [100, 106, 97, 107]
         self.assertTrue(screen_payload("support-closed-above-band", support_closed_above_band, CONTRACT)["long_support_warning"])
+
+        ended_pressure = payload(close=100)
+        ended_pressure["POS"][-2] = -1
+        ended_pressure["KK"][-2], ended_pressure["PP"][-2] = 95, 105
+        ended_pressure["ohlc"][-2] = [99, 100, 98, 104]
+        self.assertFalse(screen_payload("ended-pressure", ended_pressure, CONTRACT)["short_pressure_warning"])
+
+        ended_support = payload(close=100)
+        ended_support["POS"][-2] = 1
+        ended_support["EE"][-2], ended_support["DD"][-2] = 95, 105
+        ended_support["ohlc"][-2] = [99, 100, 97, 103]
+        self.assertFalse(screen_payload("ended-support", ended_support, CONTRACT)["long_support_warning"])
 
 
 if __name__ == "__main__":

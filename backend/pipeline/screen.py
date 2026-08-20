@@ -399,16 +399,17 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     if pos == -1 and color == "red" and kk is not None and pp is not None and kk <= close < pp:
         result["short_to_long_warning"].append(latest_item)
 
-    # 日线趋势带预警：最近 9 根内任一根回踩即可入选，并保留全部日期。
+    # 日线趋势带预警：先确认最新 K 仍在对应趋势、趋势带仍有效，
+    # 再从最近 9 根内寻找回踩，避免已结束趋势的旧回踩继续上榜。
     # 4 小时看板仍只展示转换榜单，不增加这两类预警。
     if "bar_colors" not in payload:
-        pressure_dates = _trend_band_retest_dates(payload, "pressure")
+        pressure_dates = _trend_band_retest_dates(payload, "pressure") if pos == -1 and kk is not None and pp is not None else []
         if pressure_dates:
             result["short_pressure_warning"].append(_make_item(
                 key, payload, contract, latest, ma7, atr14,
                 retest_dates=pressure_dates, retest_count=len(pressure_dates),
             ))
-        support_dates = _trend_band_retest_dates(payload, "support")
+        support_dates = _trend_band_retest_dates(payload, "support") if pos == 1 and ee is not None and dd is not None else []
         if support_dates:
             result["long_support_warning"].append(_make_item(
                 key, payload, contract, latest, ma7, atr14,
@@ -532,8 +533,8 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             },
             "trend_band_warnings": {
                 "lookback": TREND_BAND_WARNING_LOOKBACK,
-                "short_pressure_warning": "within latest 9 bars: POS=-1; KK<=high<=PP; close<PP",
-                "long_support_warning": "within latest 9 bars: POS=1; EE<=low<=DD; close>EE",
+                "short_pressure_warning": "latest bar POS=-1 with KK/PP; then within latest 9 bars: POS=-1; KK<=high<=PP; close<PP",
+                "long_support_warning": "latest bar POS=1 with EE/DD; then within latest 9 bars: POS=1; EE<=low<=DD; close>EE",
             },
         },
         "scanned_symbols": scanned,
