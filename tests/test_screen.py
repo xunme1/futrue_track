@@ -30,6 +30,17 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(atr[1], 2.5)  # (2 + 3) / 2
         self.assertEqual(atr[2], 2.25)  # (2.5 + 2) / 2
 
+    def test_score_is_ma7_deviation_percent_without_atr_gate(self):
+        values = [99.66666666666667] * 6 + [102.0]
+        ranked = payload(n=7)
+        ranked["ohlc"] = [[value, value, value - 1, value + 1] for value in values]
+        ranked["POS"][-1] = 1
+
+        hit = screen_payload("percent-score", ranked, CONTRACT)["long_trend"][0]
+        self.assertAlmostEqual(hit["ma7"], 100.0)
+        self.assertAlmostEqual(hit["score"], 2.0)
+        self.assertIsNone(hit["atr14"])
+
     def test_main_trends_require_only_position(self):
         long_d = payload(close=100)
         long_d["POS"][-1] = 1

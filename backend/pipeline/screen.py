@@ -184,7 +184,7 @@ def _trend_band_retest_dates(payload, kind, window=TREND_BAND_WARNING_LOOKBACK):
 
 def _make_item(key, payload, contract, index, ma7, atr14, **extra):
     close = _close(payload, index)
-    score = None if close is None or ma7 is None or atr14 in (None, 0) else (close - ma7) / atr14
+    score = None if close is None or ma7 in (None, 0) else (close - ma7) / ma7 * 100
     item = {
         "key": key,
         "symbol": payload.get("symbol", contract.get("symbol", key)),
@@ -379,7 +379,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     ma_values = moving_average(closes, 7)
     latest = n - 1
     atr14, ma7, close = atr_values[latest], ma_values[latest], closes[latest]
-    if close is None or atr14 in (None, 0) or ma7 is None:
+    if close is None or ma7 in (None, 0):
         return result
 
     latest_item = _make_item(key, payload, contract, latest, ma7, atr14)
@@ -472,7 +472,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
 
 
 def _sort_results(results):
-    # 趋势榜单按均线偏离的 ATR 标准化分数排列；多头越大越强、空头越小越强。
+    # 趋势榜单按收盘价相对 MA7 的偏离百分比排列；多头越大越强、空头越小越强。
     descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
         if bucket in {"long_to_short", "short_to_long"}:
@@ -518,7 +518,7 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             "atr_window": atr_window,
             "atr_method": "wilder",
             "ma_window": 7,
-            "score": "(close - MA7) / ATR14",
+            "score": "(close - MA7) / MA7 * 100 (%)",
             "main_trends": {
                 "long_trend": "POS=1; sorted by score descending",
                 "short_trend": "POS=-1; sorted by score ascending",
@@ -585,7 +585,7 @@ def print_report(report):
             print("  无")
             continue
         for item in items:
-            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.3f}"
+            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.2f}%"
             if "transition_date" in item:
                 line += f" 转折={item['transition_date']} {item['transition_from']}→{item['transition_to']}"
             if "confirmation_date" in item:

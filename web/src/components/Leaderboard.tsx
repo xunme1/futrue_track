@@ -32,7 +32,7 @@ interface Props {
 }
 
 function scoreText(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(2) : '—'
+  return Number.isFinite(value) ? `${value.toFixed(2)}%` : '—'
 }
 
 function closeText(value: number): string {

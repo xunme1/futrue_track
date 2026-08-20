@@ -27,9 +27,9 @@ export default function ScreeningMethodModal({ open, onClose, timeframe }: Props
 
         <h3>统一指标与分数</h3>
         <ul>
-          <li><b>ATR14</b>：使用 Wilder 平滑的 14 根{timeframe === '4h' ? ' 4 小时' : '日'} K 线真实波幅，衡量品种自身的波动尺度。</li>
+          <li><b>ATR14</b>：使用 Wilder 平滑的 14 根{timeframe === '4h' ? ' 4 小时' : '日'} K 线真实波幅，作为报告参考字段，不参与榜单排序。</li>
           <li><b>MA7</b>：最新收盘价的 7 根{timeframe === '4h' ? ' 4 小时' : '日'} K 线均线。</li>
-          <li><b>score</b>：<code>(最新收盘价 − MA7) / ATR14</code>。它将偏离均线的幅度按波动率标准化，便于不同价格、不同波动水平的品种比较。</li>
+          <li><b>score</b>：<code>(最新收盘价 − MA7) / MA7 × 100%</code>。表示最新收盘价相对 MA7 的涨跌幅，所有榜单均据此排序。</li>
         </ul>
 
         <h3>{timeframe === '4h' ? '4 小时转向信号' : '四类主筛与排序'}</h3>
