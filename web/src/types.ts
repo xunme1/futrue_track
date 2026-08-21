@@ -87,6 +87,11 @@ export interface ScreeningItem {
   ma7: number
   atr14: number
   score: number
+  /** 日线：本次 score 使用的开仓（或替代）K 线；4 小时报告不提供。 */
+  score_entry_date?: string
+  score_entry_open?: number
+  score_entry_source?: '实际BK开仓' | '实际SK开仓' | '转折K替代' | '推定持仓起点'
+  score_center?: number
   PQ?: boolean
   PR?: boolean
   bar_color?: 'red' | 'blue' | 'gray'

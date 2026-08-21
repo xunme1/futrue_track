@@ -39,6 +39,13 @@ function closeText(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
 }
 
+function scoreTitle(item: { score_entry_date?: string; score_entry_open?: number; score_entry_source?: string; score_center?: number }): string | undefined {
+  const entryOpen = item.score_entry_open
+  const center = item.score_center
+  if (typeof entryOpen !== 'number' || !Number.isFinite(entryOpen) || typeof center !== 'number' || !Number.isFinite(center) || !item.score_entry_date) return undefined
+  return `开仓 ${item.score_entry_date} · ${closeText(entryOpen)}（${item.score_entry_source ?? '—'}）；中心价 ${closeText(center)}`
+}
+
 /** 左侧筛选榜单；drawer=true 时供窄屏覆盖式抽屉复用。 */
 export default function Leaderboard({
   report, error, bucket, activeKey, drawer = false, onBucketChange, onSelect, onShowMethod, onClose, timeframe,
@@ -120,7 +127,7 @@ export default function Leaderboard({
               {item.signal_date && <em title={item.star_reasons?.join('；')}>确认 {item.signal_date} · 标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
             </span>
             <span className="leaderboard-values">
-              <b className={item.score >= 0 ? 'score-up' : 'score-down'}>{scoreText(item.score)}</b>
+              <b className={item.score >= 0 ? 'score-up' : 'score-down'} title={timeframe === '1d' ? scoreTitle(item) : undefined}>{scoreText(item.score)}</b>
               <small>收 {closeText(item.close)}</small>
             </span>
           </button>

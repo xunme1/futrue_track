@@ -76,6 +76,20 @@ class FourHourStrategyTests(unittest.TestCase):
         hits = screen_payload("rb2609", payload, {"symbol": "rb2609.SHF", "name": "螺纹钢"})
         self.assertEqual(len(hits["long_trend"]), 1)
 
+    def test_four_hour_score_remains_ma7_deviation_percent(self):
+        n = 7
+        payload = {
+            "symbol": "rb2609.SHF", "dates": [f"2026-08-{i + 1:02d} 15:00" for i in range(n)],
+            "ohlc": [[100, 100, 99, 101] for _ in range(6)] + [[100, 110, 99, 111]],
+            "bar_colors": ["gray"] * n, "POS": [0] * (n - 1) + [1],
+            "DD": [115.0] * n, "EE": [100.0] * n, "KK": [95.0] * n, "PP": [105.0] * n,
+        }
+
+        hit = screen_payload("rb2609", payload, CONTRACT)["long_trend"][0]
+        self.assertAlmostEqual(hit["ma7"], 100 / 7 * 6 + 110 / 7)
+        self.assertAlmostEqual(hit["score"], (110 - hit["ma7"]) / hit["ma7"] * 100)
+        self.assertNotIn("score_entry_open", hit)
+
     def test_four_hour_reversal_stars_are_scored_only_after_standard_gate(self):
         n = 20
         base = {

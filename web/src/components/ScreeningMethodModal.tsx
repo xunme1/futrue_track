@@ -29,7 +29,9 @@ export default function ScreeningMethodModal({ open, onClose, timeframe }: Props
         <ul>
           <li><b>ATR14</b>：使用 Wilder 平滑的 14 根{timeframe === '4h' ? ' 4 小时' : '日'} K 线真实波幅，作为报告参考字段，不参与榜单排序。</li>
           <li><b>MA7</b>：最新收盘价的 7 根{timeframe === '4h' ? ' 4 小时' : '日'} K 线均线。</li>
-          <li><b>score</b>：<code>(最新收盘价 − MA7) / MA7 × 100%</code>。表示最新收盘价相对 MA7 的涨跌幅，所有榜单均据此排序。</li>
+          {timeframe === '4h'
+            ? <li><b>score</b>：<code>(最新收盘价 − MA7) / MA7 × 100%</code>。表示最新收盘价相对 MA7 的涨跌幅，所有榜单均据此排序。</li>
+            : <li><b>score</b>：以对应方向开仓 K 的开盘价和最新收盘价的中点为中心：<code>中心价 = (开仓价 + 最新收盘价) / 2</code>，<code>score = (最新收盘价 − 中心价) / 中心价 × 100%</code>。多头用 BK 开仓价、空头用 SK 开仓价；未出现实际开仓的转换使用首根转折 K 开盘价，历史信号缺失时使用当前持仓段首根 K 的开盘价。分数悬浮可查看来源、开仓日期和中心价。</li>}
         </ul>
 
         <h3>{timeframe === '4h' ? '4 小时转向信号' : '四类主筛与排序'}</h3>

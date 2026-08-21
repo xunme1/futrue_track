@@ -30,16 +30,40 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(atr[1], 2.5)  # (2 + 3) / 2
         self.assertEqual(atr[2], 2.25)  # (2.5 + 2) / 2
 
-    def test_score_is_ma7_deviation_percent_without_atr_gate(self):
-        values = [99.66666666666667] * 6 + [102.0]
+    def test_daily_score_uses_inferred_position_entry_without_atr_or_ma_gate(self):
+        values = [99.66666666666667] * 5 + [100.0, 120.0]
         ranked = payload(n=7)
         ranked["ohlc"] = [[value, value, value - 1, value + 1] for value in values]
-        ranked["POS"][-1] = 1
+        ranked["POS"][-2:] = [1, 1]
 
         hit = screen_payload("percent-score", ranked, CONTRACT)["long_trend"][0]
-        self.assertAlmostEqual(hit["ma7"], 100.0)
-        self.assertAlmostEqual(hit["score"], 2.0)
+        self.assertIsNotNone(hit["ma7"])
+        self.assertAlmostEqual(hit["score"], (120 - 110) / 110 * 100)
+        self.assertEqual(hit["score_entry_date"], ranked["dates"][-2])
+        self.assertEqual(hit["score_entry_open"], 100.0)
+        self.assertEqual(hit["score_entry_source"], "推定持仓起点")
+        self.assertEqual(hit["score_center"], 110.0)
         self.assertIsNone(hit["atr14"])
+
+    def test_daily_score_uses_actual_bk_and_sk_opening_prices(self):
+        long_d = payload(n=16)
+        long_d["POS"][8:] = [1] * 8
+        long_d["ohlc"][8] = [100, 101, 99, 102]
+        long_d["ohlc"][-1] = [119, 120, 118, 121]
+        long_d["signals"] = [{"i": 8, "type": "BK", "price": 99}]
+        long_hit = screen_payload("long-entry", long_d, CONTRACT)["long_trend"][0]
+        self.assertAlmostEqual(long_hit["score"], (120 - 110) / 110 * 100)
+        self.assertEqual(long_hit["score_entry_source"], "实际BK开仓")
+        self.assertEqual(long_hit["score_entry_date"], long_d["dates"][8])
+
+        short_d = payload(n=16)
+        short_d["POS"][8:] = [-1] * 8
+        short_d["ohlc"][8] = [100, 99, 98, 101]
+        short_d["ohlc"][-1] = [81, 80, 79, 82]
+        short_d["signals"] = [{"i": 8, "type": "SK", "price": 101}]
+        short_hit = screen_payload("short-entry", short_d, CONTRACT)["short_trend"][0]
+        self.assertAlmostEqual(short_hit["score"], (80 - 90) / 90 * 100)
+        self.assertEqual(short_hit["score_entry_source"], "实际SK开仓")
 
     def test_main_trends_require_only_position(self):
         long_d = payload(close=100)
@@ -75,6 +99,9 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(hits["long_to_short"][0]["transition_close"], 98)
         self.assertEqual(hits["long_to_short"][0]["confirmation_date"], down["dates"][16])
         self.assertEqual(hits["long_to_short"][0]["confirmation_close"], 90)
+        self.assertEqual(hits["long_to_short"][0]["score_entry_source"], "转折K替代")
+        self.assertEqual(hits["long_to_short"][0]["score_entry_date"], down["dates"][14])
+        self.assertAlmostEqual(hits["long_to_short"][0]["score"], (90 - 94) / 94 * 100)
         self.assertEqual(hits["short_trend"][0]["trend_transition_label"], "多转空")
 
         equality = payload(n=17)
@@ -111,6 +138,9 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(hits["short_to_long"][0]["transition_date"], up["dates"][14])
         self.assertEqual(hits["short_to_long"][0]["transition_boundary"], "PP")
         self.assertEqual(hits["short_to_long"][0]["confirmation_date"], up["dates"][16])
+        self.assertEqual(hits["short_to_long"][0]["score_entry_source"], "转折K替代")
+        self.assertEqual(hits["short_to_long"][0]["score_entry_date"], up["dates"][14])
+        self.assertAlmostEqual(hits["short_to_long"][0]["score"], (110 - 106) / 106 * 100)
         self.assertEqual(hits["long_trend"][0]["trend_transition_label"], "空转多")
 
         warning = payload(close=100)
@@ -141,6 +171,8 @@ class ScreenTests(unittest.TestCase):
         rows = flatten_report(report)
         self.assertEqual(rows[0]["bucket"], "long_to_short_warning")
         self.assertEqual(rows[0]["bucket_name"], "多转空预警")
+        self.assertIn("score_entry_open", rows[0])
+        self.assertIn("score_center", rows[0])
 
     def test_trend_band_warnings_retain_all_retests_in_latest_nine_bars(self):
         pressure = payload(close=100)

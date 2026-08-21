@@ -89,7 +89,7 @@
 
 `buckets` 还包含四类预警：`long_to_short_warning`、`short_to_long_warning`、`short_pressure_warning` 与 `long_support_warning`。前两类为变色但未突破边界的转换预警；后两类要求最新 K 仍在对应持仓趋势并有对应趋势带，再分别回看最近 9 根：空头压力带回踩为 `POS=-1; KK≤high≤PP; close<PP`，多头支撑带回踩为 `POS=1; EE≤low≤DD; close>EE`。首页榜单预警区只展示后两类趋势带预警。
 
-每个条目均包含 `key`、`symbol`、`name`、`date`、`close`、`ma7`、`atr14`、`score`、`PQ`、`PR`、`POS`、`DD`、`EE`、`KK`、`PP`。其中 `score = (close - ma7) / ma7 × 100`，数值单位为百分比；`atr14` 保留为参考字段，不参与排序。转换条目还包含 `transition_date`、`transition_close`、`transition_boundary` 和 `transition_boundary_value`，用于定位首次变色及突破边界。
+每个条目均包含 `key`、`symbol`、`name`、`date`、`close`、`ma7`、`atr14`、`score`、`PQ`、`PR`、`POS`、`DD`、`EE`、`KK`、`PP`。`atr14` 保留为参考字段，不参与排序。日线报告的 `score` 使用对应 BK（多头）或 SK（空头）开仓 K 的开盘价：`score_center = (score_entry_open + close) / 2`，`score = (close - score_center) / score_center × 100`；因此多头收益为正、空头收益为负。条目另提供 `score_entry_date`、`score_entry_open`、`score_entry_source`（实际 BK/SK 开仓、转折 K 替代、或推定持仓起点）和 `score_center`，便于追溯。转换项会优先取转折后实际 BK/SK；尚未开仓时取首根转折 K 开盘价；历史开仓信号缺失时取当前连续 POS 段首根 K 开盘价。**4 小时报告不受此规则影响**，仍为 `score = (close - ma7) / ma7 × 100`。转换条目还包含 `transition_date`、`transition_close`、`transition_boundary` 和 `transition_boundary_value`，用于定位首次变色及突破边界。
 
 报告不存在时返回 `404`，并提示先运行上述筛选命令；报告 JSON 损坏或无法读取时返回 `500`。
 

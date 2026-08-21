@@ -140,6 +140,12 @@ def _close(payload, index):
     return _number(bar[1]) if isinstance(bar, (list, tuple)) and len(bar) >= 2 else None
 
 
+def _open(payload, index):
+    """Return the opening price stored in a dashboard OHLC bar."""
+    bar = payload["ohlc"][index]
+    return _number(bar[0]) if isinstance(bar, (list, tuple)) and len(bar) >= 1 else None
+
+
 def _low(payload, index):
     bar = payload["ohlc"][index]
     return _number(bar[2]) if isinstance(bar, (list, tuple)) and len(bar) >= 3 else None
@@ -182,9 +188,94 @@ def _trend_band_retest_dates(payload, kind, window=TREND_BAND_WARNING_LOOKBACK):
     return dates
 
 
-def _make_item(key, payload, contract, index, ma7, atr14, **extra):
+def _signal_entry(payload, signal_type, latest, start=0):
+    """Return the most recent usable BK/SK signal entry in the requested range."""
+    candidates = []
+    for signal in payload.get("signals", []):
+        signal_index = signal.get("i") if isinstance(signal, dict) else None
+        if (
+            isinstance(signal_index, int)
+            and signal.get("type") == signal_type
+            and start <= signal_index <= latest
+            and _open(payload, signal_index) is not None
+        ):
+            candidates.append(signal_index)
+    if not candidates:
+        return None
+    index = candidates[-1]
+    return {
+        "score_entry_date": payload["dates"][index],
+        "score_entry_open": _open(payload, index),
+        "score_entry_source": f"实际{signal_type}开仓",
+    }
+
+
+def _position_run_start(payload, direction, latest):
+    """Return the first index of the current contiguous directional POS run."""
+    expected_pos = 1 if direction == "long" else -1
+    index = latest
+    while index > 0 and payload["POS"][index - 1] == expected_pos:
+        index -= 1
+    return index
+
+
+def _inferred_position_entry(payload, direction, latest):
+    """Use the first bar of the current POS run when historical entry marks are absent."""
+    index = _position_run_start(payload, direction, latest)
+    entry_open = _open(payload, index)
+    if entry_open is None:
+        return None
+    return {
+        "score_entry_date": payload["dates"][index],
+        "score_entry_open": entry_open,
+        "score_entry_source": "推定持仓起点",
+    }
+
+
+def _daily_score_context(payload, direction, latest, transition_index=None):
+    """Find a traceable daily ranking entry price for one directional result.
+
+    A confirmed conversion first looks for the actual BK/SK emitted after its
+    colour reversal.  It intentionally remains on the leaderboard before an
+    entry signal exists by using that first reversal K's opening price.  Other
+    results use the latest actual entry; exported histories without that mark
+    fall back to the first K of the current same-direction POS run.
+    """
+    signal_type = "BK" if direction == "long" else "SK"
+    if transition_index is not None:
+        entry = _signal_entry(payload, signal_type, latest, start=transition_index)
+        if entry is not None:
+            return entry
+        transition_open = _open(payload, transition_index)
+        if transition_open is not None:
+            return {
+                "score_entry_date": payload["dates"][transition_index],
+                "score_entry_open": transition_open,
+                "score_entry_source": "转折K替代",
+            }
+        return None
+
+    # A stale opening signal from an earlier, already closed trade must not be
+    # reused for a newer POS segment whose BK/SK was omitted from the export.
+    return (
+        _signal_entry(payload, signal_type, latest, start=_position_run_start(payload, direction, latest))
+        or _inferred_position_entry(payload, direction, latest)
+    )
+
+
+def _make_item(key, payload, contract, index, ma7, atr14, score_direction=None, transition_index=None, **extra):
     close = _close(payload, index)
-    score = None if close is None or ma7 in (None, 0) else (close - ma7) / ma7 * 100
+    # Four-hour screening intentionally retains the MA7 deviation score.  The
+    # daily report instead measures signed return around the entry/close
+    # midpoint, so long entries are positive and short entries negative.
+    score_context = None
+    if "bar_colors" in payload or score_direction is None:
+        score = None if close is None or ma7 in (None, 0) else (close - ma7) / ma7 * 100
+    else:
+        score_context = _daily_score_context(payload, score_direction, index, transition_index)
+        entry_open = score_context.get("score_entry_open") if score_context else None
+        center = None if close is None or entry_open is None else (entry_open + close) / 2
+        score = None if center in (None, 0) else (close - center) / center * 100
     item = {
         "key": key,
         "symbol": payload.get("symbol", contract.get("symbol", key)),
@@ -207,6 +298,9 @@ def _make_item(key, payload, contract, index, ma7, atr14, **extra):
         item["PR"] = bool(payload["PR"][index])
     if "bar_colors" in payload:
         item["bar_color"] = payload["bar_colors"][index]
+    if score_context is not None:
+        item.update(score_context)
+        item["score_center"] = center
     item.update(extra)
     return item
 
@@ -379,7 +473,8 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     ma_values = moving_average(closes, 7)
     latest = n - 1
     atr14, ma7, close = atr_values[latest], ma_values[latest], closes[latest]
-    if close is None or ma7 in (None, 0):
+    # Daily midpoint scores do not depend on MA7.  Four-hour reports still do.
+    if close is None or ("bar_colors" in payload and ma7 in (None, 0)):
         return result
 
     latest_item = _make_item(key, payload, contract, latest, ma7, atr14)
@@ -389,15 +484,23 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
     # 主筛：只要策略处于对应持仓方向，即视为该方向趋势。
     # K 线颜色及趋势带位置会持续变化，不再作为趋势榜单的额外门槛。
     if pos == 1:
-        result["long_trend"].append(latest_item)
+        result["long_trend"].append(_make_item(
+            key, payload, contract, latest, ma7, atr14, score_direction="long"
+        ))
     if pos == -1:
-        result["short_trend"].append(latest_item)
+        result["short_trend"].append(_make_item(
+            key, payload, contract, latest, ma7, atr14, score_direction="short"
+        ))
 
     # 原有预警：颜色已反向，但价格仍处于来源趋势带内，尚未突破离场边界。
     if pos == 1 and color == "blue" and ee is not None and dd is not None and ee < close <= dd:
-        result["long_to_short_warning"].append(latest_item)
+        result["long_to_short_warning"].append(_make_item(
+            key, payload, contract, latest, ma7, atr14, score_direction="long"
+        ))
     if pos == -1 and color == "red" and kk is not None and pp is not None and kk <= close < pp:
-        result["short_to_long_warning"].append(latest_item)
+        result["short_to_long_warning"].append(_make_item(
+            key, payload, contract, latest, ma7, atr14, score_direction="short"
+        ))
 
     # 日线趋势带预警：先确认最新 K 仍在对应趋势、趋势带仍有效，
     # 再从最近 9 根内寻找回踩，避免已结束趋势的旧回踩继续上榜。
@@ -406,13 +509,13 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
         pressure_dates = _trend_band_retest_dates(payload, "pressure") if pos == -1 and kk is not None and pp is not None else []
         if pressure_dates:
             result["short_pressure_warning"].append(_make_item(
-                key, payload, contract, latest, ma7, atr14,
+                key, payload, contract, latest, ma7, atr14, score_direction="short",
                 retest_dates=pressure_dates, retest_count=len(pressure_dates),
             ))
         support_dates = _trend_band_retest_dates(payload, "support") if pos == 1 and ee is not None and dd is not None else []
         if support_dates:
             result["long_support_warning"].append(_make_item(
-                key, payload, contract, latest, ma7, atr14,
+                key, payload, contract, latest, ma7, atr14, score_direction="long",
                 retest_dates=support_dates, retest_count=len(support_dates),
             ))
 
@@ -436,7 +539,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
                 confirmation_boundary,
             ) = short_turn
             result["long_to_short"].append(_make_item(
-                key, payload, contract, latest, ma7, atr14,
+                key, payload, contract, latest, ma7, atr14, score_direction="short", transition_index=index,
                 transition_date=payload["dates"][index], transition_from="red", transition_to="blue",
                 transition_close=transition_close, transition_boundary="EE", transition_boundary_value=boundary,
                 confirmation_date=payload["dates"][confirmation_index],
@@ -453,7 +556,7 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
                 confirmation_boundary,
             ) = long_turn
             result["short_to_long"].append(_make_item(
-                key, payload, contract, latest, ma7, atr14,
+                key, payload, contract, latest, ma7, atr14, score_direction="long", transition_index=index,
                 transition_date=payload["dates"][index], transition_from="blue", transition_to="red",
                 transition_close=transition_close, transition_boundary="PP", transition_boundary_value=boundary,
                 confirmation_date=payload["dates"][confirmation_index],
@@ -472,13 +575,23 @@ def screen_payload(key, payload, contract, lookback=8, atr_window=14):
 
 
 def _sort_results(results):
-    # 趋势榜单按收盘价相对 MA7 的偏离百分比排列；多头越大越强、空头越小越强。
+    # 日线分数为开仓中点收益，4 小时分数为收盘相对 MA7 的偏离百分比；
+    # 两者均遵循多头越大越强、空头越小越强的排序方向。
     descending = {"long_trend", "short_to_long", "short_to_long_warning", "long_support_warning"}
     for bucket, items in results.items():
+        is_descending = bucket in descending
+        def score_key(item):
+            score = item.get("score")
+            # Invalid prices should not prevent the rest of an otherwise valid
+            # report from being ranked.  Keep them at the bottom in either
+            # direction while preserving deterministic numeric ordering.
+            if score is None:
+                return (1, 0)
+            return (0, -score if is_descending else score)
         if bucket in {"long_to_short", "short_to_long"}:
-            items.sort(key=lambda item: (-item.get("stars", 0), -item["score"] if bucket in descending else item["score"]))
+            items.sort(key=lambda item: (-item.get("stars", 0), *score_key(item)))
         else:
-            items.sort(key=lambda item: item["score"], reverse=bucket in descending)
+            items.sort(key=score_key)
 
 
 def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_window=14, timeframe="1d"):
@@ -518,7 +631,16 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             "atr_window": atr_window,
             "atr_method": "wilder",
             "ma_window": 7,
-            "score": "(close - MA7) / MA7 * 100 (%)",
+            "score": (
+                "(close - MA7) / MA7 * 100 (%)"
+                if timeframe == "4h"
+                else "(close - score_center) / score_center * 100 (%); score_center=(score_entry_open + close)/2"
+            ),
+            "score_entry": (
+                "not used; four-hour score is MA7 deviation"
+                if timeframe == "4h"
+                else "long uses BK open and short uses SK open; conversions use post-transition BK/SK, then transition-bar open; missing history uses current POS-run first-bar open"
+            ),
             "main_trends": {
                 "long_trend": "POS=1; sorted by score descending",
                 "short_trend": "POS=-1; sorted by score ascending",
@@ -585,7 +707,13 @@ def print_report(report):
             print("  无")
             continue
         for item in items:
-            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={item['score']:.2f}%"
+            score_text = "—" if item.get("score") is None else f"{item['score']:.2f}%"
+            line = f"  {item['key']:<8} {item['name']:<8} 收={item['close']:.4f} score={score_text}"
+            if "score_entry_open" in item:
+                line += (
+                    f" 开仓={item['score_entry_date']}/{item['score_entry_open']:.4f}"
+                    f" 中心={item['score_center']:.4f}({item['score_entry_source']})"
+                )
             if "transition_date" in item:
                 line += f" 转折={item['transition_date']} {item['transition_from']}→{item['transition_to']}"
             if "confirmation_date" in item:
