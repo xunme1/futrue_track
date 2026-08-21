@@ -3,14 +3,16 @@
 # - 池 CSV 更新后重跑生成器即可；extra: true 的条目会被保留
 # - source: ifind（同花顺）| ricequant（米筐，中金所专用）
 # 本次生成: config/国内期货主力合约精简版_63品种_20260728.csv → 65 个合约
+# 2026-08-21：池内主力合约按米筐 get_dominant(rule=0, rank=1) 手工换月；
+# 下次重跑生成器前，应同步更新对应的池 CSV，避免覆盖这些换月结果。
 pool_csv: config/国内期货主力合约精简版_63品种_20260728.csv
 contracts:
-- symbol: ao2609.SHF
+- symbol: ao2610.SHF
   source: ricequant
   name: 氧化铝
   category: 有色金属
   exchange: SHFE
-- symbol: pb2609.SHF
+- symbol: pb2610.SHF
   source: ricequant
   name: 铅
   category: 有色金属
@@ -20,12 +22,12 @@ contracts:
   name: 铜
   category: 有色金属
   exchange: SHFE
-- symbol: al2609.SHF
+- symbol: al2610.SHF
   source: ricequant
   name: 铝
   category: 有色金属
   exchange: SHFE
-- symbol: zn2609.SHF
+- symbol: zn2610.SHF
   source: ricequant
   name: 锌
   category: 有色金属
@@ -35,27 +37,27 @@ contracts:
   name: 锡
   category: 有色金属
   exchange: SHFE
-- symbol: ni2609.SHF
+- symbol: ni2610.SHF
   source: ricequant
   name: 镍
   category: 有色金属
   exchange: SHFE
-- symbol: br2609.SHF
+- symbol: br2610.SHF
   source: ricequant
   name: 丁二烯橡胶
   category: 能源化工
   exchange: SHFE
-- symbol: ru2609.SHF
+- symbol: ru2701.SHF
   source: ricequant
   name: 天然橡胶
   category: 能源化工
   exchange: SHFE
-- symbol: fu2609.SHF
+- symbol: fu2611.SHF
   source: ricequant
   name: 燃料油
   category: 能源化工
   exchange: SHFE
-- symbol: bu2609.SHF
+- symbol: bu2610.SHF
   source: ricequant
   name: 石油沥青
   category: 能源化工
@@ -70,12 +72,12 @@ contracts:
   name: 黄金
   category: 贵金属
   exchange: SHFE
-- symbol: sp2609.SHF
+- symbol: sp2611.SHF
   source: ricequant
   name: 纸浆
   category: 轻工
   exchange: SHFE
-- symbol: ss2609.SHF
+- symbol: ss2610.SHF
   source: ricequant
   name: 不锈钢
   category: 黑色金属
@@ -90,102 +92,102 @@ contracts:
   name: 螺纹钢
   category: 黑色金属
   exchange: SHFE
-- symbol: bc2608.INE
+- symbol: bc2609.INE
   source: ricequant
   name: 国际铜
   category: 有色金属
   exchange: INE
-- symbol: lu2609.INE
+- symbol: lu2610.INE
   source: ricequant
   name: 低硫燃料油
   category: 能源
   exchange: INE
-- symbol: sc2609.INE
+- symbol: sc2610.INE
   source: ricequant
   name: 原油
   category: 能源
   exchange: INE
-- symbol: nr2609.INE
+- symbol: nr2610.INE
   source: ricequant
   name: 20号胶
   category: 能源化工
   exchange: INE
-- symbol: ec2608.INE
+- symbol: ec2610.INE
   source: ricequant
   name: 集运指数(欧线)
   category: 航运
   exchange: INE
-- symbol: p2609.DCE
+- symbol: p2701.DCE
   source: ricequant
   name: 棕榈油
   category: 农产品
   exchange: DCE
-- symbol: c2609.DCE
+- symbol: c2611.DCE
   source: ricequant
   name: 玉米
   category: 农产品
   exchange: DCE
-- symbol: cs2609.DCE
+- symbol: cs2611.DCE
   source: ricequant
   name: 玉米淀粉
   category: 农产品
   exchange: DCE
-- symbol: lh2609.DCE
+- symbol: lh2611.DCE
   source: ricequant
   name: 生猪
   category: 农产品
   exchange: DCE
-- symbol: a2609.DCE
+- symbol: a2611.DCE
   source: ricequant
   name: 豆一
   category: 农产品
   exchange: DCE
-- symbol: b2609.DCE
+- symbol: b2611.DCE
   source: ricequant
   name: 豆二
   category: 农产品
   exchange: DCE
-- symbol: y2609.DCE
+- symbol: y2701.DCE
   source: ricequant
   name: 豆油
   category: 农产品
   exchange: DCE
-- symbol: m2609.DCE
+- symbol: m2701.DCE
   source: ricequant
   name: 豆粕
   category: 农产品
   exchange: DCE
-- symbol: jd2609.DCE
+- symbol: jd2610.DCE
   source: ricequant
   name: 鸡蛋
   category: 农产品
   exchange: DCE
-- symbol: eg2609.DCE
+- symbol: eg2610.DCE
   source: ricequant
   name: 乙二醇
   category: 化工
   exchange: DCE
-- symbol: bz2609.DCE
+- symbol: bz2610.DCE
   source: ricequant
   name: 纯苯
   category: 化工
   exchange: DCE
-- symbol: pp2609.DCE
+- symbol: pp2701.DCE
   source: ricequant
   name: 聚丙烯
   category: 化工
   exchange: DCE
-- symbol: l2609.DCE
+- symbol: l2701.DCE
   source: ricequant
   name: 聚乙烯(塑料)
   category: 化工
   exchange: DCE
-- symbol: v2609.DCE
+- symbol: v2701.DCE
   source: ricequant
   name: 聚氯乙烯(PVC)
   category: 化工
   exchange: DCE
-- symbol: eb2609.DCE
+- symbol: eb2610.DCE
   source: ricequant
   name: 苯乙烯
   category: 化工
@@ -195,47 +197,47 @@ contracts:
   name: 液化石油气
   category: 能源
   exchange: DCE
-- symbol: j2609.DCE
+- symbol: j2701.DCE
   source: ricequant
   name: 焦炭
   category: 黑色
   exchange: DCE
-- symbol: jm2609.DCE
+- symbol: jm2701.DCE
   source: ricequant
   name: 焦煤
   category: 黑色
   exchange: DCE
-- symbol: i2609.DCE
+- symbol: i2701.DCE
   source: ricequant
   name: 铁矿石
   category: 黑色
   exchange: DCE
-- symbol: PS2609.GFE
+- symbol: PS2611.GFE
   source: ricequant
   name: 多晶硅
   category: 新能源
   exchange: GFEX
-- symbol: LC2609.GFE
+- symbol: LC2701.GFE
   source: ricequant
   name: 碳酸锂
   category: 新能源
   exchange: GFEX
-- symbol: SI2609.GFE
+- symbol: SI2611.GFE
   source: ricequant
   name: 工业硅
   category: 新能源/有色
   exchange: GFEX
-- symbol: CF609.CZC
+- symbol: CF701.CZC
   source: ricequant
   name: 棉花
   category: 农产品
   exchange: CZCE
-- symbol: SR609.CZC
+- symbol: SR701.CZC
   source: ricequant
   name: 白糖
   category: 农产品
   exchange: CZCE
-- symbol: CJ609.CZC
+- symbol: CJ701.CZC
   source: ricequant
   name: 红枣
   category: 农产品
@@ -245,12 +247,12 @@ contracts:
   name: 花生
   category: 农产品
   exchange: CZCE
-- symbol: OI609.CZC
+- symbol: OI611.CZC
   source: ricequant
   name: 菜籽油
   category: 农产品
   exchange: CZCE
-- symbol: RM609.CZC
+- symbol: RM611.CZC
   source: ricequant
   name: 菜粕
   category: 农产品
@@ -260,62 +262,62 @@ contracts:
   name: 鲜苹果
   category: 农产品
   exchange: CZCE
-- symbol: TA609.CZC
+- symbol: TA701.CZC
   source: ricequant
   name: PTA
   category: 化工
   exchange: CZCE
-- symbol: PL609.CZC
+- symbol: PL611.CZC
   source: ricequant
   name: 丙烯
   category: 化工
   exchange: CZCE
-- symbol: PX609.CZC
+- symbol: PX611.CZC
   source: ricequant
   name: 对二甲苯
   category: 化工
   exchange: CZCE
-- symbol: UR609.CZC
+- symbol: UR701.CZC
   source: ricequant
   name: 尿素
   category: 化工
   exchange: CZCE
-- symbol: SH609.CZC
+- symbol: SH611.CZC
   source: ricequant
   name: 烧碱
   category: 化工
   exchange: CZCE
-- symbol: PR609.CZC
+- symbol: PR610.CZC
   source: ricequant
   name: 瓶片
   category: 化工
   exchange: CZCE
-- symbol: MA609.CZC
+- symbol: MA610.CZC
   source: ricequant
   name: 甲醇
   category: 化工
   exchange: CZCE
-- symbol: PF609.CZC
+- symbol: PF610.CZC
   source: ricequant
   name: 短纤
   category: 化工
   exchange: CZCE
-- symbol: SA609.CZC
+- symbol: SA701.CZC
   source: ricequant
   name: 纯碱
   category: 化工
   exchange: CZCE
-- symbol: FG609.CZC
+- symbol: FG701.CZC
   source: ricequant
   name: 玻璃
   category: 建材
   exchange: CZCE
-- symbol: SF609.CZC
+- symbol: SF611.CZC
   source: ricequant
   name: 硅铁
   category: 铁合金
   exchange: CZCE
-- symbol: SM609.CZC
+- symbol: SM611.CZC
   source: ricequant
   name: 锰硅
   category: 铁合金
