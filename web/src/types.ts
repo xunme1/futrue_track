@@ -86,7 +86,13 @@ export interface ScreeningItem {
   close: number
   ma7: number
   atr14: number
-  score: number
+  score: number | null
+  /** 日线趋势榜：同一交易日的完整榜单名次及本次连续在榜历史。 */
+  rank?: number
+  previous_rank?: number | null
+  rank_change?: number | null
+  rank_status?: 'up' | 'down' | 'flat' | 'new' | 'unavailable'
+  rank_history?: { date: string; rank: number | null; total: number }[]
   /** 日线：本次 score 使用的开仓（或替代）K 线；4 小时报告不提供。 */
   score_entry_date?: string
   score_entry_open?: number
@@ -124,6 +130,13 @@ export interface ScreeningItem {
 export interface ScreeningReport {
   timeframe?: Timeframe
   generated_at: string
+  trend_ranking?: {
+    as_of: string | null
+    dates: string[]
+    excluded_symbols: { key: string; name: string; last_date: string | null }[]
+    pool_basis: 'current'
+    missing_bar_policy: 'exclude'
+  }
   rules: {
     lookback: number
     atr_window: number

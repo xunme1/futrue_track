@@ -1,4 +1,5 @@
 import type { ScreeningBucket, ScreeningReport, Timeframe } from '../types'
+import RankChange from './RankChange'
 
 export const MAIN_BUCKETS: { key: ScreeningBucket; label: string }[] = [
   { key: 'long_trend', label: '多头趋势' },
@@ -31,8 +32,8 @@ interface Props {
   timeframe: Timeframe
 }
 
-function scoreText(value: number): string {
-  return Number.isFinite(value) ? `${value.toFixed(2)}%` : '—'
+function scoreText(value: number | null): string {
+  return value !== null && Number.isFinite(value) ? `${value.toFixed(2)}%` : '—'
 }
 
 function closeText(value: number): string {
@@ -53,6 +54,8 @@ export default function Leaderboard({
   const items = report?.buckets[bucket] ?? []
   const mainBuckets = timeframe === '4h' ? FOUR_HOUR_BUCKETS : MAIN_BUCKETS
   const activeMeta = [...mainBuckets, ...WARNING_BUCKETS].find((item) => item.key === bucket)
+  const isTrend = timeframe === '1d' && (bucket === 'long_trend' || bucket === 'short_trend')
+  const ranking = isTrend ? report?.trend_ranking : undefined
 
   return (
     <aside className={`leaderboard${drawer ? ' leaderboard-drawer' : ''}`} aria-label="筛选榜单">
@@ -60,8 +63,11 @@ export default function Leaderboard({
         <div>
           <h2>筛选榜单</h2>
           <div className="leaderboard-date">
-            {report ? `数据截至 ${items[0]?.date ?? '—'} · 扫描 ${report.scanned_symbols} 个品种` : '等待筛选报告…'}
+            {report ? `数据截至 ${ranking?.as_of ?? items[0]?.date ?? '—'} · 扫描 ${report.scanned_symbols} 个品种` : '等待筛选报告…'}
           </div>
+          {!!ranking?.excluded_symbols.length && <div className="leaderboard-stale" title={ranking.excluded_symbols.map((item) => `${item.name} ${item.key}：${item.last_date ?? '无数据'}`).join('\n')}>
+            {ranking.excluded_symbols.length} 个品种缺当日数据，暂未参与排名
+          </div>}
         </div>
         <div className="leaderboard-actions">
           <button className="leaderboard-method" onClick={onShowMethod}>计算方法</button>
@@ -109,12 +115,13 @@ export default function Leaderboard({
           <div className="leaderboard-message">当前没有符合“{activeMeta?.label}”条件的品种</div>
         )}
         {items.map((item, index) => (
-          <button
+          <div
             key={`${bucket}-${item.key}`}
             className={`leaderboard-item${item.key === activeKey ? ' active' : ''}`}
             onClick={() => onSelect(item.key, bucket)}
           >
-            <span className="leaderboard-rank">{index + 1}</span>
+            <button type="button" className="leaderboard-select" aria-label={`查看${item.name}K线`}>
+            <span className="leaderboard-rank">{isTrend ? item.rank ?? index + 1 : index + 1}</span>
             <span className="leaderboard-name">
               <b>{item.name}</b>
               <small>{item.symbol}</small>
@@ -126,11 +133,13 @@ export default function Leaderboard({
               {item.retest_dates?.length ? <em>回踩 {item.retest_dates.join('、')}</em> : null}
               {item.signal_date && <em title={item.star_reasons?.join('；')}>确认 {item.signal_date} · 标准突破{item.stars ? ` ${'🌟'.repeat(item.stars)}` : ''}</em>}
             </span>
+            </button>
+            {isTrend && item.rank_status && item.rank_history && <RankChange item={item} direction={activeMeta?.label ?? ''} />}
             <span className="leaderboard-values">
-              <b className={item.score >= 0 ? 'score-up' : 'score-down'} title={timeframe === '1d' ? scoreTitle(item) : undefined}>{scoreText(item.score)}</b>
+              <b className={item.score == null ? '' : item.score >= 0 ? 'score-up' : 'score-down'} title={timeframe === '1d' ? scoreTitle(item) : undefined}>{scoreText(item.score)}</b>
               <small>收 {closeText(item.close)}</small>
             </span>
-          </button>
+          </div>
         ))}
       </div>
     </aside>

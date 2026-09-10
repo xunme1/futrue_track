@@ -594,6 +594,101 @@ def _sort_results(results):
             items.sort(key=score_key)
 
 
+def _daily_rank_dates(payload):
+    """Only well-formed, ordered daily histories can define ranking dates."""
+    if not _payload_is_usable(payload) or "bar_colors" in payload:
+        return []
+    dates = payload["dates"]
+    try:
+        if any(datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m-%d") != date for date in dates):
+            return []
+        if any(left >= right for left, right in zip(dates, dates[1:])):
+            return []
+    except (TypeError, ValueError):
+        return []
+    return dates
+
+
+def _add_trend_rankings(results, loaded, selected, atr_window):
+    """Reconstruct seven daily cross-sections with date-bounded entry prices.
+
+    Membership is based on the current selected pool, not archived pool files.
+    A missing bar never carries forward into a cross-section. Other screening
+    buckets deliberately keep their existing latest-per-symbol semantics.
+    """
+    histories = {}
+    all_dates = set()
+    for key, (payload, contract) in loaded.items():
+        dates = _daily_rank_dates(payload)
+        if not dates:
+            continue
+        histories[key] = (payload, contract, {date: i for i, date in enumerate(dates)})
+        all_dates.update(dates)
+    dates = sorted(all_dates)[-7:]
+    as_of = dates[-1] if dates else None
+    trend_buckets = {"long_trend": (1, "long"), "short_trend": (-1, "short")}
+    snapshots = {date: {bucket: [] for bucket in trend_buckets} for date in dates}
+    for key, (payload, contract, indices) in histories.items():
+        closes = [_close(payload, i) for i in range(len(payload["dates"]))]
+        averages = moving_average(closes, 7)
+        atrs = wilder_atr(payload["ohlc"], atr_window)
+        for date in dates:
+            index = indices.get(date)
+            if index is None or closes[index] is None:
+                continue
+            for bucket, (pos, direction) in trend_buckets.items():
+                if payload["POS"][index] == pos:
+                    snapshots[date][bucket].append(_make_item(
+                        key, payload, contract, index, averages[index], atrs[index],
+                        score_direction=direction,
+                    ))
+    ranks = {}
+    for date, buckets in snapshots.items():
+        _sort_results(buckets)
+        ranks[date] = {
+            bucket: {item["key"]: rank for rank, item in enumerate(items, 1)
+                     if item["score"] is not None}
+            for bucket, items in buckets.items()
+        }
+
+    for bucket, (pos, direction) in trend_buckets.items():
+        results[bucket] = [item for item in results[bucket]
+                           if item["key"] in histories and item["date"] == as_of]
+        for rank, item in enumerate(results[bucket], 1):
+            payload, _, indices = histories[item["key"]]
+            latest = indices[as_of]
+            run_start = _position_run_start(payload, direction, latest)
+            run_date = payload["dates"][run_start]
+            history = [
+                {"date": date,
+                 "rank": ranks[date][bucket].get(item["key"]) if date >= run_date else None,
+                 "total": len(snapshots[date][bucket])}
+                for date in dates
+            ]
+            previous_rank = history[-2]["rank"] if len(history) > 1 else None
+            change, status = None, "unavailable"
+            if item["score"] is not None:
+                if previous_rank is not None:
+                    change = previous_rank - rank
+                    status = "up" if change > 0 else "down" if change < 0 else "flat"
+                elif len(dates) > 1:
+                    previous_index = indices.get(dates[-2])
+                    if previous_index is not None and payload["POS"][previous_index] != pos:
+                        status = "new"
+            item.update(rank=rank, previous_rank=previous_rank, rank_change=change,
+                        rank_status=status, rank_history=history)
+
+    excluded = []
+    for contract in selected:
+        key = contract["symbol"].split(".")[0]
+        if key not in histories or as_of not in histories[key][2]:
+            payload = loaded[key][0] if key in loaded else {}
+            excluded.append({"key": key, "name": contract.get("name", key),
+                             "last_date": (payload.get("dates") or [None])[-1]})
+    return {"as_of": as_of, "dates": dates, "excluded_symbols": excluded,
+            "pool_basis": "current", "missing_bar_policy": "exclude"}
+
+
 def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_window=14, timeframe="1d"):
     """扫描合约池中的 JSON 产物，返回完整的可序列化筛选报告。"""
     json_dir = Path(json_dir) if json_dir is not None else timeframe_json_dir(timeframe)
@@ -610,6 +705,7 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
     results = {bucket: [] for bucket in BUCKETS}
     scanned = 0
     skipped = []
+    loaded = {}
     for entry in selected:
         key = entry["symbol"].split(".")[0]
         path = json_dir / f"{key}.json"
@@ -618,13 +714,16 @@ def screen_contracts(contracts, json_dir=None, symbols=None, lookback=8, atr_win
             continue
         with open(path, encoding="utf-8") as f:
             payload = json.load(f)
+        loaded[key] = (payload, entry)
         scanned += 1
         per_symbol = screen_payload(key, payload, entry, lookback=lookback, atr_window=atr_window)
         for bucket in BUCKETS:
             results[bucket].extend(per_symbol[bucket])
     _sort_results(results)
+    trend_ranking = _add_trend_rankings(results, loaded, selected, atr_window) if timeframe == "1d" else None
     return {
         "timeframe": timeframe,
+        **({"trend_ranking": trend_ranking} if trend_ranking is not None else {}),
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "rules": {
             "lookback": lookback,
@@ -684,7 +783,8 @@ def write_report(report, output_dir):
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({key: json.dumps(value, ensure_ascii=False) if key == "rank_history" else value
+                          for key, value in row.items()} for row in rows)
     return json_path, csv_path
 
 

@@ -91,6 +91,24 @@
 
 每个条目均包含 `key`、`symbol`、`name`、`date`、`close`、`ma7`、`atr14`、`score`、`PQ`、`PR`、`POS`、`DD`、`EE`、`KK`、`PP`。`atr14` 保留为参考字段，不参与排序。日线报告的 `score` 使用对应 BK（多头）或 SK（空头）开仓 K 的开盘价：`score_center = (score_entry_open + close) / 2`，`score = (close - score_center) / score_center × 100`；因此多头收益为正、空头收益为负。条目另提供 `score_entry_date`、`score_entry_open`、`score_entry_source`（实际 BK/SK 开仓、转折 K 替代、或推定持仓起点）和 `score_center`，便于追溯。转换项会优先取转折后实际 BK/SK；尚未开仓时取首根转折 K 开盘价；历史开仓信号缺失时取当前连续 POS 段首根 K 开盘价。**4 小时报告不受此规则影响**，仍为 `score = (close - ma7) / ma7 × 100`。转换条目还包含 `transition_date`、`transition_close`、`transition_boundary` 和 `transition_boundary_value`，用于定位首次变色及突破边界。
 
+### 日线趋势榜排名变化
+
+仅日线 `long_trend` / `short_trend` 使用统一截止日期：当前扫描合约池有效日线日期的并集中的最新日期。缺少该日 K 线的品种不进入这两张榜；其他分类保持原有逻辑。历史按当前合约池和当前评分公式回算，不恢复过去的合约池成员，也不以前值填补缺失行情。同分按合约池顺序，名次连续编号。
+
+新报告包含可选 `trend_ranking` 元数据：`as_of`（截止日期，无有效日线时为 null）、`dates`（最多 7 个交易日）、`excluded_symbols`（缺最新数据的 `{key, name, last_date}` 列表）、`pool_basis: "current"`、`missing_bar_policy: "exclude"`。
+
+两张趋势榜条目新增以下可选字段：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `rank` | number | 当前榜单名次，从 1 开始；无有效分数仍排末尾 |
+| `previous_rank` | number / null | 上一交易日同一连续趋势段内的有效名次 |
+| `rank_change` | number / null | 上一根名次减当前名次；正数为排名上升 |
+| `rank_status` | string | `up` / `down` / `flat` / `new` / `unavailable` |
+| `rank_history` | object[] | 按日期升序的 `{date, rank, total}`，`total` 为当日该榜总数 |
+
+历史仅显示本次连续 POS 段，入榜前和缺行情、无有效分数的点为 null；缺口处断线，不跨缺口比较升降。上一交易日有 K 且 POS 不同则为 `new`；上一交易日缺数据、当前分数无效或无法确定是否新入榜时为 `unavailable`。CSV 的 `rank_history` 单元格是标准 JSON 字符串。旧报告无这些字段时前端不显示排名变化。
+
 报告不存在时返回 `404`，并提示先运行上述筛选命令；报告 JSON 损坏或无法读取时返回 `500`。
 
 ---
