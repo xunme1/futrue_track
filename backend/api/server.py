@@ -13,16 +13,19 @@
     GET /                        前端看板（frontend/ 静态目录）
 """
 import json
+import re
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..core.config import PROJECT_ROOT, load_contracts
+from ..core.config import DATA_DIR, PROJECT_ROOT, load_contracts
 from ..core.timeframes import json_dir, screening_file
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+REPORTS_DIR = DATA_DIR / "reports"
+_REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 app = FastAPI(title="期货指标监测 API", version="0.2.0")
 
 
@@ -109,6 +112,57 @@ def signals(key: str, timeframe: Literal["1d", "4h"] = Query("1d")):
     if d is None:
         raise HTTPException(status_code=404, detail=f"品种 '{key}' 无数据，请先运行 download + daily 流水线")
     return d
+
+
+def _check_report_date(date: str) -> str:
+    if not _REPORT_DATE_RE.match(date):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    return date
+
+
+@app.get("/api/reports")
+def reports():
+    """已归档日报列表（倒序）。日报由 backend.pipeline.report_facts/report_render 生成。"""
+    out = []
+    if not REPORTS_DIR.exists():
+        return out
+    for fp in sorted(REPORTS_DIR.glob("daily_report_*.json"), reverse=True):
+        date = fp.stem.replace("daily_report_", "")
+        if not _REPORT_DATE_RE.match(date):
+            continue
+        meta = {"date": date,
+                "has_html": (REPORTS_DIR / f"daily_report_{date}.html").exists(),
+                "data_date": None, "generated_at": None, "one_liner": None}
+        try:
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+            facts = d.get("facts") or {}
+            meta["data_date"] = (facts.get("header") or {}).get("data_date_1d")
+            meta["generated_at"] = facts.get("created_at")
+            meta["one_liner"] = (d.get("narrative") or {}).get("one_liner")
+        except (OSError, json.JSONDecodeError):
+            pass
+        out.append(meta)
+    return out
+
+
+@app.get("/api/reports/{date}")
+def report_detail(date: str):
+    """某日归档日报 JSON（facts + narrative 合并）。"""
+    fp = REPORTS_DIR / f"daily_report_{_check_report_date(date)}.json"
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的归档日报")
+    with open(fp, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get("/api/reports/{date}/html")
+def report_html(date: str):
+    """某日归档日报 HTML（供前端 iframe 直接展示）。"""
+    fp = REPORTS_DIR / f"daily_report_{_check_report_date(date)}.html"
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的日报 HTML")
+    return FileResponse(fp, media_type="text/html")
 
 
 # 静态前端（放在最后，避免覆盖 /api 路由）

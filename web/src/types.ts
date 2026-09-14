@@ -149,3 +149,11 @@ export interface ScreeningReport {
   summary: Record<ScreeningBucket, number>
   buckets: Record<ScreeningBucket, ScreeningItem[]>
 }
+
+export interface ReportMeta {
+  date: string
+  data_date: string | null
+  generated_at: string | null
+  one_liner: string | null
+  has_html: boolean
+}

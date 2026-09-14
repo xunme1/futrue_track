@@ -27,7 +27,9 @@ future/
 │   │   └── zxgl_xdd.py        #   当前策略：周线过滤+强弱+形态+OPI
 │   ├── pipeline/
 │   │   ├── download.py        # 增量下载脚本：数据源→本地行情库（每日运行，只补新数据）
-│   │   └── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
+│   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
+│   │   ├── report_facts.py    # 日报事实计算器：筛选榜单+看板产物→结构化事实 JSON
+│   │   └── report_render.py   # 日报合成渲染：事实+叙事（可选）→归档 HTML/JSON
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -48,6 +50,7 @@ future/
 │   │   └── ricequant/         #     futures_daily / futures_weekly
 │   ├── json/                  #   看板数据（每品种一个 JSON）
 │   ├── csv/                   #   逐 bar 信号明细
+│   ├── reports/               #   每日日报归档（facts/ 叙事 narrative/ 快照 snapshots/ + daily_report_*.{html,json}）
 │   └── screenshots/           #   验证截图
 │
 ├── docs/                      # 文档
@@ -96,6 +99,12 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.daily      # 2. 本地计算信号
 .venv/Scripts/python -m backend.pipeline.screen     # 3. 生成筛选榜单（data/screening/latest.json）
 .venv/Scripts/python tools/make_dashboard.py        # 4. 重建旧版离线快照（可选）
+
+# 每日日报（服务器日更 refresh_daily.sh 已自动执行第 5 步）：
+.venv/Scripts/python -m backend.pipeline.report_facts    # 5. 计算结构化事实（data/reports/facts/）
+.venv/Scripts/python -m backend.pipeline.report_render   # 6. 合成归档日报 HTML+JSON（data/reports/）
+#    两步之间可由 OpenClaw 龙虾 agent 按 docs/report_contract.md 写叙事 JSON
+#    （data/reports/narrative/，可缺省，缺失时模板兜底）；看板「📰 日报」入口回看历史日报
 
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种

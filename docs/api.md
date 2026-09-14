@@ -167,6 +167,36 @@
 
 ---
 
+## 7. GET /api/reports（每日日报）
+
+归档日报列表（按日期倒序）。日报由报告流水线生成：
+`backend.pipeline.report_facts`（结构化事实）→ OpenClaw 叙事（可选）→
+`backend.pipeline.report_render`（合成），产物在 `data/reports/` 下。
+
+**响应**：数组，每项：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `date` | string | 报告日期 YYYY-MM-DD（= 数据日的下一交易日） |
+| `data_date` | string\|null | 数据基准日（1d 收盘日） |
+| `generated_at` | string\|null | facts 生成时间 |
+| `one_liner` | string\|null | 一句话定性（龙虾叙事；无叙事时为 null） |
+| `has_html` | bool | 是否已有渲染好的 HTML |
+
+无日报目录时返回空数组。
+
+### GET /api/reports/{date}
+
+某日归档日报 JSON（`{report_date, facts, narrative}` 合并结构）。
+`{date}` 必须是 `YYYY-MM-DD`，否则 400；无该日日报返回 404。
+
+### GET /api/reports/{date}/html
+
+某日日报的渲染 HTML（`text/html`），**供前端 iframe 的 src 直接使用**。
+无该日 HTML 返回 404。
+
+---
+
 ## 给前端开发的要点备忘
 
 1. **先调 /api/contracts 建品种导航**（按 category 分组、只显示 has_data=true），选中后调 /api/signals/{key}。

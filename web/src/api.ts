@@ -1,4 +1,4 @@
-import type { ContractInfo, ScreeningReport, SignalData, Timeframe } from './types'
+import type { ContractInfo, ReportMeta, ScreeningReport, SignalData, Timeframe } from './types'
 
 async function getJson<T>(url: string): Promise<T> {
   const resp = await fetch(url)
@@ -28,6 +28,11 @@ export function fetchSignals(key: string, timeframe: Timeframe): Promise<SignalD
 export function fetchScreening(timeframe: Timeframe): Promise<ScreeningReport> {
   return getJson<ScreeningReport>(`/api/screening${timeframeQuery(timeframe)}`)
     .then((report) => assertRequestedTimeframe(report, timeframe))
+}
+
+/** 归档日报列表（由 backend.pipeline.report_facts/report_render 生成）。 */
+export function fetchReports(): Promise<ReportMeta[]> {
+  return getJson<ReportMeta[]>('/api/reports')
 }
 
 /** 防止旧版服务端忽略 ?timeframe=4h 后把日线数据静默混入 4 小时页面。 */
