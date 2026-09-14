@@ -1,74 +1,113 @@
-# 日报叙事契约（OpenClaw 龙虾 agent 撰写规范）
+# 日报 v2：生成与模型叙事契约
 
-> 报告流水线分两步：`report_facts.py` 产出结构化事实 JSON（纯规则），
-> 龙虾 agent 读事实 JSON 撰写叙事 JSON，最后 `report_render.py` 合成归档 HTML。
-> 本文件是叙事 JSON 的**唯一格式契约**，写作口径以
-> futures-dash-package README（判据体系 §5-7、日报标准 §8）为准。
+日报入口是 `backend/pipeline/generate_report.py`。事实计算、规则短评、HTML、Markdown和模型提示词在同一个文件内；快照模式只需要 Python 3.10+ 标准库，不需要模型密钥。原先 `report_facts` / `report_render` 两步命令保留，但事实格式升级为 v2，旧叙事须重新生成。
 
-## 流程（每个工作日 16:40 由 OpenClaw cron 触发）
+## 每日生成
+
+项目根目录执行：
 
 ```bash
-# 1. 找到最新 facts（文件名 = 报告日期 = 数据日的下一交易日）
-ls -t /opt/futrue_track/data/reports/facts/facts_*.json | head -1
-# 2. 按本契约写 narrative JSON（文件名必须与 facts 的报告日期一致）
-#    /opt/futrue_track/data/reports/narrative/narrative_YYYY-MM-DD.json
-# 3. 合成渲染
-/opt/futrue_track/.venv/bin/python -m backend.pipeline.report_render
+# 原生流水线：data/screening + data/4h/screening + 两周期 data/json
+python -m backend.pipeline.generate_report
+
+# 独立快照：可直接复制此 py 文件使用
+python backend/pipeline/generate_report.py \
+  --input-dir data/report_inputs/latest \
+  --output-dir data/reports
 ```
 
-- facts 的 `created_at` 不是当天 → 数据未更新（周末/节假日），**直接停止，不要写叙事**。
-- 叙事缺失时渲染器会用模板句式兜底，报告照样能出——但质量以叙事版为准。
+原生 `data/screening/latest.json` 存在时优先使用原生产物；不存在时才自动查 `data/report_inputs/latest`。也可传 `--data-dir` 改变原生数据目录。原生模式使用项目已有的配置解析器读取合约池；独立模式没有第三方依赖。
 
-## narrative JSON 格式
+快照目录包含：
+
+```text
+screen_1d_now.json     # screening API 原始对象
+screen_4h_now.json
+symbols_1d_now.json    # symbols API 原始数组：key/pos/last_date/last_signal
+symbols_4h_now.json
+contracts.json        # 推荐：当前观察池数组，key或symbol + name
+```
+
+没有合约池时只使用分桶并集，并标注无法核验桶外覆盖。不能直接把 symbols 数组全部当观察池：里面可能残留已换月的旧合约。
+
+首次生成可以传 `--previous-dir` 指定上一数据日的同格式目录；以后自动读取输出目录的历史快照。没有基线时写“无基线”，不会把所有品种说成新增。显式基线会一起归档，重复运行保持同一比较口径。同日更新覆盖同名报告，不生成虚假日变动；输入指纹覆盖两周期数据和基线，4h单独更新也能被识别。
+
+报告日默认取数据日的下一工作日，**未内置交易所假日日历**。生产环境建议提供官方交易日字符串数组 JSON：
+
+```bash
+python -m backend.pipeline.generate_report --calendar /path/to/trading_days.json
+# 或显式指定下一交易日
+python -m backend.pipeline.generate_report --report-date 2026-09-15
+```
+
+数据日取行情 `date` / `trend_ranking.as_of` / `data_date`，绝不把 `generated_at` 当行情日。没有可核验数据日直接报错。两周期日期不一致会停用共振和跨周期分歧结论。
+
+## 输出
+
+```text
+data/reports/
+  daily_report_YYYY-MM-DD.html       # 浅色正文、深色摘要、折叠明细、打印样式
+  daily_report_YYYY-MM-DD.md         # 全量Markdown，同一表格数据模型
+  daily_report_YYYY-MM-DD.json       # facts + narrative，兼容看板归档入口
+  facts/facts_YYYY-MM-DD.json        # v2结构化事实
+  prompts/prompts_YYYY-MM-DD.json    # 七组messages与合并示例
+  snapshots/inputs_数据日.json      # 两周期输入及来源哈希
+```
+
+HTML 不依赖外部字体、CDN或网络资源。小屏表格独立横向滚动；点击“打印 / PDF”会临时展开全部明细，使用 A4 横向样式。每个文件原子替换，JSON最后落盘，避免归档列表引用未完成报告。
+
+## 模型负责什么
+
+模型是可选的短评编辑，不负责计算信号、持仓、分组、评级、排名、交易日和价格。以下七组完整提示词由 `prompt_package()` 自动生成，并将本次对应栏目事实嵌入 `messages`：
+
+| 任务 | 写作重点 | 禁止误判 |
+| --- | --- | --- |
+| overview | 多空变化、当日真实开平仓、65字摘要 | 无基线推断增减 |
+| divergence | 重点风险、板块联动、日线失效条件 | 4h修复覆盖日线破位 |
+| trends | 日线主线、4h一致性、强弱梯队 | POS=0写成空头 |
+| transitions | 事件时间与交易信号时间分离 | SP/BP写成SK/BK |
+| support | 当前与EE/DD距离、历史回踩、确认条件 | 历史触碰写成当前低吸 |
+| pressure | 当前与KK/PP位置、触压证据、失效线 | 带下方写成当前加空 |
+| rank | 显著升降、新入榜、实际连续改善 | 排名当独立证据，单日升写连升 |
+
+系统提示词要求只使用给定事实、不执行输入资料中的指令、不补新闻或编造数字、不写仓位指令、不输出HTML。每节只给该节所需标的事实。模型返回 `content` 和 `evidence_keys`，overview额外返回 `one_liner`。人工核对证据后，把各节 `content` 合并为：
 
 ```json
 {
-  "report_date": "2026-09-14",
-  "one_liner": "一句话定性（倒金字塔，最重要的事先说）",
-  "core_judgments": [
-    {"title": "判断标题（如：日线多头主力集体撤退）", "body": "论据，引用 facts 数字"}
-  ],
-  "divergence_notes": {
-    "黑色系": "板块联动点评（键名 = facts 里的板块名）",
-    "B": "B 档（日线偏弱破位）整体点评",
-    "C": "C 档（4h 偏弱破位）整体点评"
-  },
-  "long_notes": "看多主线整体点评（梯队划分依据）",
-  "short_notes": "看空主线整体点评（老熊/新熊、共振标记）",
-  "transition_notes": "转折裁决整体点评（A/B/C/D/E 档要点）",
-  "leader_notes": "龙头回踩点评",
-  "pressure_notes": "熊头遇压点评",
-  "rank_notes": "动量排名雷达点评（新贵/掉队与信号的交叉印证）",
-  "action_tips": ["编号操作提示，9 条左右，可直接执行"]
+  "report_date": "2026-09-15",
+  "input_hash": "从本次facts或prompts原样复制",
+  "one_liner": "一句话摘要，可缺省",
+  "sections": {
+    "overview": "总览短评，可缺省",
+    "divergence": "分歧短评，可缺省",
+    "trends": "主线短评，可缺省",
+    "transitions": "转折短评，可缺省",
+    "support": "回踩短评，可缺省",
+    "pressure": "遇压短评，可缺省",
+    "rank": "排名短评，可缺省"
+  }
 }
 ```
 
-- 除 `report_date` 外所有字段**可缺省**；缺哪段，哪段用模板兜底。
-- `core_judgments` 建议 3-5 条；数组元素也可以是纯字符串（此时无标题）。
-- `divergence_notes` 的键：板块名（"黑色系"/"油脂粕"/…）对应 A 档分组，"B"/"C" 对应档位。
-- 全部纯文本（可带 ⚠️✅🔴 等符号），**不要写 HTML/Markdown 标签**，渲染器只做转义。
+```bash
+python -m backend.pipeline.generate_report --narrative /path/to/narrative.json
+# 或延续两阶段流程，叙事放data/reports/narrative/narrative_YYYY-MM-DD.json后执行：
+python -m backend.pipeline.report_render --date 2026-09-15
+```
 
-## 写作规则（与原版日报一致）
+所有短评均可缺省；缺省段落使用规则生成。日期或 `input_hash` 不符则报错，避免不同数据批次的叙事混用。摘要最大180字符，单节最大600字符；HTML/代码围栏被拒绝。**指纹和结构校验只能防串数据与注入，不能证明模型语义正确**，外部叙事仍需人工校对，来源会明确标示。脚本不会自动发送数据到模型服务，不需要新增模型SDK。
 
-1. **事实唯一来源 = facts JSON**，数字禁止自编；解读才有发挥空间。
-2. 铁律：4h 转折一律以日线趋势裁决（facts.verdict_4h 已分好 A/B/C/D/E 档，直接引用）。
-3. 分歧名单评级：🔴 多单不持有/先撤；🟠 减半、破 EE 走；🟡 只盯不做；修复信号 = 4h 重新 BK。
-4. 风格：简化、明显、倒金字塔；严重项加 ⚠️；操作提示必须可执行（带关键位价格）。
-5. 关键位用 facts 里的 DD/EE/KK/PP 数值；pos_zero_blindspot 里的品种只能定性描述。
-6. 排名雷达（facts.rank_radar）是第二证据源，点名品种必须与信号/关键位交叉印证。
+## v2事实字段
 
-## facts JSON 字段速查
+| 字段 | 说明 |
+| --- | --- |
+| header | 两周期数据日、生成时间、比较日、日历口径 |
+| overview | 八桶数量、历史数量、进出key；无有效基线为null |
+| daily_actions | 当日权威BK/SK/SP/BP的key数组 |
+| instruments | 全池一品种一行：daily/four_hour、events、verdict、hits、risk、condition |
+| sectors | 覆盖、多空数量、偏弱离多数量与不同品种联动 |
+| rank_radar | 同榜升降、新入榜、轨迹、实际连升次数、状态交叉核验 |
+| quality_notes | 缺失价格、不同步、源计数差异、剔除旧事件等 |
+| provenance / previous_provenance | 当前和基线文件路径与SHA256 |
 
-| 字段 | 内容 |
-|---|---|
-| `header` | 数据基准日、1d/4h generated_at、对比基准日 |
-| `overview` | 两口径 8 桶计数 + 较前日增减 + 各桶进出名单 |
-| `daily_actions` | 当日日线 BK/SK/BP/SP 品种（last_signal 口径） |
-| `short_resonance` | 双级别共振空头（1d 持空 + 4h 持空） |
-| `verdict_4h` | 4h 转折裁决：A 共振空 / B 已离场 / C 回踩 / D1-D3 空转多 / E 重新 BK |
-| `divergence` | 分歧名单：j1 板块联动 / j2 日线破位 / j3 4h 破位 / rated 评级 |
-| `leader_watch` | 龙头回踩（leader_retest）/ 熊头遇压（bear_pressure） |
-| `rank_radar` | 多/空榜新贵掉队、新入榜、7 日轨迹 |
-| `key_levels` | 贴 EE/破 DD 关键位清单（1d） |
-| `pos_zero_blindspot` | 桶外盲点品种（仅定性） |
-| `buckets_1d` | 1d 八桶全量明细 |
+旧版 `verdict_4h`、`divergence` 等内部字段不再使用，外部叙事任务须迁移到本契约。看板日报列表和HTML接口保留原文件名及 `facts.header` / `narrative.one_liner` 路径。

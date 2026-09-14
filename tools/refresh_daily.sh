@@ -62,11 +62,8 @@ fi
 "${PYTHON_BIN}" -m backend.pipeline.daily --timeframe 1d
 "${PYTHON_BIN}" -m backend.pipeline.screen --timeframe 1d
 
-# 日报事实计算（产物供 OpenClaw 叙事与 report_render 合成；数据未更新时自行跳过，失败不阻断日更）
-"${PYTHON_BIN}" -m backend.pipeline.report_facts \
-  || echo "[$(date '+%F %T %Z')] [警告] report_facts 运行失败（不影响日更产物）"
-# 先渲染规则兜底版日报；OpenClaw 龙虾叙事任务（17:30）会再渲染覆盖为叙事版
-"${PYTHON_BIN}" -m backend.pipeline.report_render \
-  || echo "[$(date '+%F %T %Z')] [警告] report_render 运行失败（不影响日更产物）"
+# 一步生成规则日报、事实归档与分节模型提示词；可由外部叙事任务补充短评后重渲染。
+"${PYTHON_BIN}" -m backend.pipeline.generate_report \
+  || echo "[$(date '+%F %T %Z')] [警告] 日报生成失败（不影响日更产物）"
 
 echo "===== $(date '+%F %T %Z') 日更完成 ====="
