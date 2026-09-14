@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Ubuntu 服务器日线更新入口：日线行情下载 → 信号计算 → 筛选榜单。
-# 建议由 Cron 在工作日 17:30（Asia/Shanghai）调用：
-#   30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
+# 建议由 Cron 在工作日 16:20（Asia/Shanghai）调用，并由 guard 在 17:35 兜底：
+#   20 16 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
+#   35 17 * * 1-5 /opt/futrue_track/tools/refresh_daily_guard.sh
+# 16:20 依据：iFinD 南华指数实测收盘后约 40 分钟内入库（15:42 已含当日）；
+# 米筐期货日线发布时点官方未公布，实测 15:42 未就绪、17:11 已就绪，故设兜底补跑。
 
 set -Eeuo pipefail
 
