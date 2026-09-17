@@ -62,9 +62,11 @@ fi
 "${PYTHON_BIN}" -m backend.pipeline.daily --timeframe 1d
 "${PYTHON_BIN}" -m backend.pipeline.screen --timeframe 1d
 
-# 每日总结：事实扫描 → 合成 HTML 归档。规则版先出；LLM 按 docs/summary_contract.md
-# 写好 narrative/narrative_YYYY-MM-DD.json 后重跑第二步即可覆盖为叙事版。
+# 每日总结：事实扫描 → LLM 叙事（可选，需 DEEPSEEK_API_KEY）→ 合成 HTML 归档。
+# narrator 未配置密钥或调用失败时自动跳过，render 以规则模板兜底。
 if "${PYTHON_BIN}" -m backend.pipeline.scan_report; then
+  "${PYTHON_BIN}" -m backend.pipeline.summary_narrator \
+    || echo "[$(date '+%F %T %Z')] [警告] summary_narrator 运行失败（回退规则版日报）"
   "${PYTHON_BIN}" -m backend.pipeline.summary_render \
     || echo "[$(date '+%F %T %Z')] [警告] summary_render 运行失败（不影响日更产物）"
 else

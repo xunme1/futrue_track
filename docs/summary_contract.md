@@ -7,6 +7,11 @@
 ## 流程
 
 ```bash
+# 自动叙事（推荐）：scan 后由 summary_narrator 逐节调用 LLM 生成并校验落盘
+export DEEPSEEK_API_KEY=sk-...        # 服务器经 /etc/future-track.env 注入
+/opt/futrue_track/.venv/bin/python -m backend.pipeline.summary_narrator
+
+# 手工流程（调试/核对用）：
 # 1. 找到最新扫描产物（文件名 = 数据日）
 ls -t /opt/futrue_track/data/reports/scan/scan_*.json | head -1
 # 2. 按本契约写 narrative JSON（报告日期 = 数据日的下一交易日）
@@ -14,6 +19,8 @@ ls -t /opt/futrue_track/data/reports/scan/scan_*.json | head -1
 # 3. 渲染
 /opt/futrue_track/.venv/bin/python -m backend.pipeline.summary_render
 ```
+
+`summary_narrator` 未配置密钥、调用失败或单节字段不合格时只缺省对应节，日更照常出规则兜底版；它成功后会自动重渲染，无需再手动执行第 3 步。日更脚本 `tools/refresh_daily.sh` 已按 scan → narrator → render 顺序接入。
 
 - 行情日期以 `data_date` 为准，不能用 `created_at` / `generated_at` 判断行情是否更新。当前版本拒绝两周期行情日不一致；显式 `--data-date` 也必须等于输入实际行情日。
 - 报告日期 = 数据日的**下一交易日**（09-15 收盘 → `narrative_2026-09-16.json`）。
