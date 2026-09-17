@@ -40,15 +40,28 @@ MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 
 CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# 语言规范硬校验：字段名/英文枚举/4位以上小数的回复直接打回重写。
+BANNED = re.compile(
+    r"pos_[14dh]|score_[14dh]|below_EE|close_[14dh]|EE_[14dh]|DD_[14dh]|KK_[14dh]|PP_[14dh]"
+    r"|rank_change|retest_count|reopened_long|repaired|superseded|verdict|LEAD_|ABSO_|QUASI_|TIER_"
+    r"|pos=|c[1-4][=：]|why[=：]|\d\.\d{4,}"
+)
+
 SYSTEM_PROMPT = (
-    "你是期货看板日报编辑。只解释给定扫描JSON里的事实，不重新计算信号与分类，不补外部新闻与节假日知识。"
-    "铁律：4h转折以日线趋势裁决；日线EE是价格风险参考，是否已平多由SP与当前POS核验；"
-    "只有repaired=true才称满足本期回踩修复证据，reopened_long只证明本期开多，评分回暖不证明重新BK。"
-    "区分pos_4h/score_4h/below_EE_4h，只在below_EE_4h为true时描述收破4h EE并引用同周期close_4h与EE_4h；未知必须写未知。"
-    "分歧按verdict、why及c1~c4解释；待核验不等于抵抗成立；板块当前空仓数不写成近5日平多数。"
-    "排名是score派生量，不将名次上升解释为资金流入；空头评分转正不代表自动出榜。"
-    "数字只能照抄事实，关键位用DD/EE/KK/PP原值，不自行计算阈值。"
-    "风格：简化、倒金字塔、最重要的事先说；能用数字就不用形容词；严重项加⚠️。"
+    "你是期货看板日报编辑，写给交易员看的中文读物，不是数据转储。只解释给定扫描JSON里的事实，不重新计算信号与分类，不补外部新闻与节假日知识。"
+    "【语言规范·必须遵守】"
+    "1. 全部用完整中文短句，禁止电报体、禁止只罗列合约代码；"
+    "2. 品种首次出现写中文名+代码（如「对二甲苯（PX611）」），同段后文可用中文名；一段话点名不超过4只，更多时用「等N只」；"
+    "3. 禁止出现任何JSON字段名或英文枚举：pos_4h、score_4h、below_EE_4h、close_4h、EE_4h、rank_change、retest_count、repaired、reopened_long、superseded、verdict、why、LEAD_1D、ABSO_1D、QUASI_1D、TIER_4H 等，一律改用中文（4h持仓、收破4h EE、满足修复证据、判据条件等）；"
+    "4. 数字格式化：价格和关键位最多2位小数，百分比最多1位，评分最多2位；禁止照抄长小数（如8702.666666666666必须写成8702.67）；"
+    "5. 一段话只讲一件事，关键位引用最多两档（如EE与DD），不要把全部档位逐只堆出来。"
+    "【判据铁律】4h转折以日线趋势裁决；日线EE是价格风险参考，是否已平多由SP与当前持仓核验；"
+    "只有明确标注修复成立的才称满足本期回踩修复证据，本期重新开多只证明开多，评分回暖不证明重新开多。"
+    "只在确实收破4h EE时这样描述，并引用同周期收盘价与EE；未知必须写未知。"
+    "分歧按判定结论与条件解释；待核验不等于抵抗成立；板块当前空仓数不写成近5日平多数。"
+    "排名是评分派生量，不将名次上升解释为资金流入；空头评分转正不代表自动出榜。"
+    "数字只能照抄事实，关键位用DD/EE/KK/PP原值（按第4条格式化），不自行计算阈值。"
+    "风格：倒金字塔、最重要的事先说；能用数字就不用形容词；严重项加⚠️。"
     "只输出JSON纯文本，不要HTML、Markdown或代码围栏。"
 )
 
@@ -70,20 +83,20 @@ def _with(facts, *keys):
 # 任务表：名称 → (返回类型, 写作要求, 事实子集)。
 # 返回类型：header=tone+one_liner；note=单节点评content；list_cautions/list_tips=items数组。
 TASKS = {
-    "header": ("header", "写tone（≤12字的市场定性，如「空头扩散日」）与one_liner（≤80字一句话，倒金字塔：当日真实开平仓、多空计数变化、最重要风险先说）。",
+    "header": ("header", "写tone（≤10字中文定性，不含代码与英文，如「空头扩散日」）与one_liner（≤80字完整一句中文：多空计数变化＋当日最重要的一件事，品种最多点3只且用中文名，禁止罗列代码）。",
                ("overview", "new_signals", "leaders")),
-    "1": ("note", "写第1节「两口径总览」点评（≤150字）：日线定方向、4h定节奏；分桶重叠不能相加；无基线不得说增减。", ("overview",)),
-    "2": ("note", "写第2节「趋势与龙头」点评（≤160字）：梯队划分依据；双强/绝对/ quasi 的分档差异；只在below_EE_4h为true时提收破。",
+    "1": ("note", "写两口径总览点评（≤150字）：日线定方向、4h定节奏；与前一日的变化；分桶重叠不可相加。开头不要写节名。", ("overview",)),
+    "2": ("note", "写趋势与龙头点评（≤160字）：梯队分档依据用中文说（如「日线与4h双强」「日线评分≥10」）；点名龙头用中文名；只在确实收破4h EE时提及。开头不要写节名。",
           ("leaders", "long_4h_tiers", "long_positions")),
-    "3": ("note", "写第3节「龙头回踩」点评（≤140字）：现价与EE/DD距离、历史回踩日期、4h状态；远离支撑带不得写正在低吸。", ("leader_retest",)),
-    "4": ("note", "写第4节「分歧名单」点评（≤160字）：解释verdict、why及c1~c4；农/工分流；单只预警不等于风险解除，待核验不等于抵抗成立。", ("divergence",)),
-    "5": ("note", "写第5节「看空主线」点评（≤140字）：空头性质分层（新开/持续/反弹空）；空头评分转正不写成即将出榜。", ("short_positions",)),
-    "6": ("note", "写第6节「阶段转折」点评（≤150字）：转折桶是历史事件不等于当前仓位；SP/BP不写成SK/BK；只有repaired=true才写已验证修复。", ("turn",)),
-    "7": ("note", "写第7节「熊头遇压」点评（≤140字）：现价与KK/PP位置、触压日期；未进入压力带不得写已遇压；收盘上破PP为条件失效。", ("bear_pressure",)),
-    "9": ("note", "写第9节「排名雷达」点评（≤150字）：显著升降与新入榜，交叉核验4h状态；不将单日改善写成连续走强。", ("rank_radar",)),
-    "cautions": ("list_cautions", "给2~4条「别误读」提醒，覆盖本期最容易被误读的事实（如转折桶≠当前仓位、4h修复≠日线风险解除）。每条{\"title\":\"≤16字标题\",\"body\":\"≤80字正文\"}。",
+    "3": ("note", "写龙头回踩点评（≤140字）：现价与支撑带EE/DD的距离、历史回踩日期、4h状态；远离支撑带不得写正在低吸。开头不要写节名。", ("leader_retest",)),
+    "4": ("note", "写分歧名单点评（≤160字）：用自然语言解释判定结论与成立/不成立的条件（不要出现c1/c2等编号）；农/工分流结论；单只预警不等于风险解除，待核验不等于抵抗成立。开头不要写节名。", ("divergence",)),
+    "5": ("note", "写看空主线点评（≤140字）：空头分层（当日新开/持续/反弹），各层代表品种用中文名；空头评分转正不写成即将出榜。开头不要写节名。", ("short_positions",)),
+    "6": ("note", "写阶段转折点评（≤150字）：转折是历史事件不等于当前仓位；平仓不写成反向开仓；只有明确修复成立的才写已验证修复。开头不要写节名。", ("turn",)),
+    "7": ("note", "写熊头遇压点评（≤140字）：现价与压力带KK/PP位置、触压日期；未进入压力带不得写已遇压；收盘上破PP为条件失效。开头不要写节名。", ("bear_pressure",)),
+    "9": ("note", "写排名雷达点评（≤150字）：显著升降与新入榜（品种用中文名），交叉核验4h状态；单日改善不写成连续走强。开头不要写节名。", ("rank_radar",)),
+    "cautions": ("list_cautions", "给2~4条「别误读」提醒，覆盖本期最容易被误读的事实（如转折≠当前仓位、4h修复≠日线风险解除）。每条{\"title\":\"≤14字中文标题\",\"body\":\"≤80字完整中文句\"}。",
                  ("overview", "divergence", "turn", "leaders", "new_signals")),
-    "tips": ("list_tips", "给6~9条编号操作提示，每条可独立执行且带关键位价格（DD/EE/KK/PP照抄事实）；按重要度排序，严重项加⚠️。",
+    "tips": ("list_tips", "给6~9条操作提示，每条一个主题、一句完整中文：动作＋品种中文名＋最多两档关键位价格（2位小数）；按重要度排序，严重项加⚠️；禁止逐只罗列整组合约、禁止堆全部档位。",
              ("key_levels", "leaders", "divergence", "turn", "new_signals")),
 }
 
@@ -130,7 +143,7 @@ def _clean_text(value, limit=2000):
     if not isinstance(value, str):
         return None
     value = value.strip()
-    if not value or re.search(r"<[^>]+>|```", value):
+    if not value or re.search(r"<[^>]+>|```", value) or BANNED.search(value):
         return None
     return value[:limit]
 
@@ -147,15 +160,24 @@ def build_messages(facts, name):
 
 
 def apply_reply(narrative, name, data):
-    """把单节回复并入叙事；字段不合格则缺省该节。"""
+    """把单节回复并入叙事；存在候选文本但违反语言规范时报错（触发重写）。"""
     kind = TASKS[name][0]
+
+    def need(value, what, limit=2000):
+        if isinstance(value, str) and value.strip():
+            cleaned = _clean_text(value, limit)
+            if cleaned is None:
+                raise ValueError(f"{what}含字段名/英文枚举/长小数，需重写")
+            return cleaned
+        return None
+
     if kind == "header":
-        tone, one = _clean_text(data.get("tone"), 40), _clean_text(data.get("one_liner"), 200)
+        tone, one = need(data.get("tone"), "tone", 40), need(data.get("one_liner"), "one_liner", 200)
         if tone and one:
             narrative["tone"], narrative["one_liner"] = tone, one
             return True
     elif kind == "note":
-        content = _clean_text(data.get("content"))
+        content = need(data.get("content"), "content")
         if content:
             narrative["section_notes"][name] = content
             return True
@@ -166,18 +188,18 @@ def apply_reply(narrative, name, data):
                 cleaned = []
                 for it in items[:6]:
                     if isinstance(it, dict):
-                        title, body = _clean_text(it.get("title"), 60), _clean_text(it.get("body"), 300)
+                        title, body = need(it.get("title"), "cautions.title", 60), need(it.get("body"), "cautions.body", 300)
                         if title and body:
                             cleaned.append({"title": title, "body": body})
                     else:
-                        text = _clean_text(it, 300)
+                        text = need(it, "cautions.item", 300)
                         if text:
                             cleaned.append(text)
                 if cleaned:
                     narrative["cautions"] = cleaned
                     return True
             else:
-                cleaned = [t for t in (_clean_text(i, 300) for i in items[:12]) if t]
+                cleaned = [t for t in (need(i, "tips.item", 300) for i in items[:12]) if t]
                 if cleaned:
                     narrative["action_tips"] = cleaned
                     return True
@@ -189,11 +211,13 @@ def generate(facts, model, timeout, max_tokens, retries=2):
                  "source": f"{model} 自动叙事 · 已绑定本次事实（发布前请核对）", "section_notes": {}}
     done, failed = [], []
     for name in TASKS:
+        messages = build_messages(facts, name)
         last_error = None
         for attempt in range(1, retries + 2):
+            raw = ""
             try:
-                data = parse_reply(chat(build_messages(facts, name), model, timeout, max_tokens))
-                if apply_reply(narrative, name, data):
+                raw = chat(messages, model, timeout, max_tokens)
+                if apply_reply(narrative, name, parse_reply(raw)):
                     done.append(name)
                 else:
                     raise ValueError("回复字段不符合契约")
@@ -201,6 +225,9 @@ def generate(facts, model, timeout, max_tokens, retries=2):
             except (ValueError, KeyError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
                 if attempt <= retries:
+                    messages = messages + [
+                        {"role": "assistant", "content": raw[:2000]},
+                        {"role": "user", "content": f"上次回复未通过校验（{str(exc)[:80]}）。按语言规范重写：完整中文短句、品种带中文名、不出现字段名、数字最多2位小数。"}]
                     time.sleep(2 * attempt)
         else:
             failed.append(f"{name}: {last_error}")
