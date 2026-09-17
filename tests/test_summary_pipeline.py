@@ -126,12 +126,12 @@ class SummaryPipelineTests(unittest.TestCase):
         p = {'m':_row('m2701',3.2,101,DD=100,EE=99),
              'y':_row('y2701',-1,101,pos=-1),'OI':_row('OI611',-1,101,pos=-1)}
         four = {'m2701':_row('m2701',None,101,pos=0)}
-        self.assertFalse(scan._divergence(p,four,set())['items'])
-        self.assertEqual(scan._long_4h_tiers(p,four)['4h未知'][0]['score_4h'],None)
+        self.assertEqual(scan._divergence(p,four,set())['items'][0]['verdict'], '待核验')
+        self.assertEqual(scan._long_4h_tiers(p,four)['4h空仓'][0]['score_4h'],None)
 
     def test_repair_needs_recent_exit_then_entry_and_retest(self):
         row={'key':'eg2610','retest_dates':['2026-09-14']}
-        four={'eg2610':dict(_row('eg2610',2,101), last={'type':'BK','date':'2026-09-15 15:00'},
+        four={'eg2610':dict(_row('eg2610',2,101,EE=100), last={'type':'BK','date':'2026-09-15 15:00'},
                      recent_signals=[{'type':'SP','date':'2026-09-11 15:00'},{'type':'BK','date':'2026-09-15 15:00'}])}
         self.assertTrue(scan._attach_4h([dict(row)],four,'2026-09-14')[0]['repaired'])
         four['eg2610']['last']['date']='2026-09-01 15:00'
@@ -170,6 +170,12 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertNotEqual(first['input_hash'],second['input_hash'])
         with self.assertRaises(ValueError):
             render.render_html(second,dict(report_date='2026-09-16',input_hash=first['input_hash']))
+
+    def test_old_rules_require_rescan_before_render(self):
+        f = self.run_scan()
+        f['rules_version'] = 'summary-v2.0'
+        with self.assertRaisesRegex(ValueError, '规则版本过旧'):
+            render.render_html(f, None)
 
     def test_explicit_report_date_reaches_body_and_api(self):
         f=self.run_scan()

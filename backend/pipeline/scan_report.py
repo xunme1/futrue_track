@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """期货看板每日总结 · 事实扫描器（报告流水线第 1 步，纯规则、无 LLM）。
 
-判据口径来源：资料库《期货看板日报 · 方法论与复制指南》（v4 判据体系），
+判据口径来源：资料库《期货看板日报 · 方法论与复制指南》（经本项目纠偏的 v5 判据，见 docs/methodology_v5_review.md），
 移植自 daily_scan.py，数据源改为读取本地流水线产物，不再依赖 HTTP 看板服务。
 
 与 daily_scan.py 的差异（缺失与时效性校验优先于判据）：
@@ -31,7 +31,7 @@ from backend.core.timeframes import TIMEFRAMES, json_dir, screening_file
 LEAD_1D, LEAD_4H = 4.5, 1.0
 ABSO_1D = 10.0          # 日线绝对龙头门槛
 QUASI_1D = 3.0          # 准龙头下沿；也是【五】分档的参与门槛
-TIER_4H = -0.5          # 4h 微负 / 破位分界（农产品抵抗条件 3）
+TIER_4H = -0.5          # 农产品抵抗评分下限；不用于判断价格破位
 
 # 板块定义（方法论 §9；TYPE 未列出的默认「工」）
 SECTORS = {
@@ -229,7 +229,7 @@ def repr_of(rows, key):
 
 
 def sector_mood(P1, sector):
-    """板块氛围：返回 (已开空品种, 已离场品种)。已离场 = 不在日线多头榜。"""
+    """当前板块状态：持空、空仓数量；不代表近5日平多事件。"""
     short_, gone_ = [], []
     for b in SECTORS.get(sector, []):
         r = P1.get(b)
@@ -238,7 +238,7 @@ def sector_mood(P1, sector):
         elif r.get('pos') == -1:
             short_.append(b)
         elif r.get('pos') == 0:
-            gone_.append(b)                      # 已平多未开空
+            gone_.append(b)                      # 空仓可能来自SP或BP，不推断事件
     return short_, gone_
 
 
@@ -350,7 +350,7 @@ def scan(data_date=None, prev_date=None):
         missing = [r['key'] for r in P[tf].values() if r.get('pos') is not None and r.get('score') is None]
         facts['coverage'][tf]['missing_score'] = len(missing)
         if missing:
-            quality_notes.append(f"{tf}: {len(missing)} 个合约缺少可用动量评分，不参与强弱/分歧判断：" + '、'.join(missing))
+            quality_notes.append(f"{tf}: {len(missing)} 个合约缺少可用动量评分，评分条件记为未知，持仓与价位独立核验：" + '、'.join(missing))
     facts['input_hash'] = digest({'rules': RULES_VERSION, 'screen': raw_scr, 'symbols': sym,
                                   'previous': prev, 'data_date': data_date, 'prev_date': prev_date})
     facts['input_snapshot'] = {'screen': scr, 'symbols': sym}
@@ -411,6 +411,8 @@ def _leaders(P1, R4):
         r4 = repr_of(R4, r['key'])
         if r.get('score') is None or r4.get('score') is None or r4.get('pos') != 1:
             continue
+        if state4(r4)['below_EE_4h'] is not False:
+            continue
         s1, s4 = _sc(r), _sc(r4)
         if s1 >= LEAD_1D and s4 >= LEAD_4H:
             dual.append((b, r, r4))
@@ -434,82 +436,109 @@ def _leader_row(b, r, r4):
     return d
 
 
+def state4(r):
+    """持仓、价位、评分独立核验；事件仅由最新交易信号解释。"""
+    pos, score, close, ee = (r.get(k) for k in ('pos', 'score', 'close', 'EE'))
+    last = r.get('last') or {}
+    below = close < ee if close is not None and ee is not None and ee > 0 else None
+    position = {1: '持多', -1: '持空', 0: '空仓'}.get(pos, '持仓未知')
+    if pos == 0:
+        position = {'SP': '平多后空仓', 'BP': '平空后空仓'}.get(last.get('type'), '空仓（来源未核验）')
+    if pos not in (-1, 0, 1):
+        tier = '4h未知'
+    elif pos == -1:
+        tier = '4h持空'
+    elif pos == 0:
+        tier = '4h空仓'
+    elif below is True:
+        tier = '4h破位'
+    elif below is None or score is None:
+        tier = '4h未知'
+    elif score < 0:
+        tier = '4h动能偏负'
+    elif score >= LEAD_4H:
+        tier = '4h强势'
+    else:
+        tier = '4h弱正'
+    price_state = '收破4h EE' if below is True else ('未破4h EE' if below is False else '4h价位未知')
+    return dict(tier=tier, position_4h=position, pos_4h=pos, score_4h=score,
+                close_4h=close, EE_4h=ee, below_EE_4h=below,
+                gap_to_EE_4h=_gap_pct(close, ee), last_signal_4h=last,
+                state_4h=position + ' · ' + price_state,
+                in_long_trend_4h=pos == 1)
+
+
 def _long_4h_tiers(P1, R4):
-    """【五】日线多头（score≥QUASI_1D）× 4h 状态分档"""
-    tiers = {'4h强势': [], '4h贴零': [], '4h微负': [], '4h破位': [], '4h未知': []}
-    for b, r in sorted(P1.items(), key=lambda x: -_sc(x[1])):
-        if r.get('pos') != 1 or _sc(r) < QUASI_1D:
+    """覆盖所有日线持多，避免低评分或4h评分回暖导致漏项。"""
+    tiers = {t: [] for t in ('4h强势', '4h弱正', '4h动能偏负', '4h破位', '4h空仓', '4h持空', '4h未知')}
+    for r in sorted(P1.values(), key=lambda r: -_sc(r)):
+        if r.get('pos') != 1:
             continue
-        r4 = repr_of(R4, r['key'])
-        s4 = r4.get('score')
-        if s4 is None or r4.get('pos') is None:
-            tag = '4h未知'
-        elif s4 >= LEAD_4H:
-            tag = '4h强势'
-        elif s4 >= 0:
-            tag = '4h贴零'
-        elif s4 >= TIER_4H:
-            tag = '4h微负'
-        else:
-            tag = '4h破位'
         d = _row(r)
-        d.update({'score_4h': s4, 'tier': tag,
-                  'in_long_trend_4h': r4.get('pos') == 1,
-                  'pos_4h': r4.get('pos'),
-                  'gap_to_EE': _gap_pct(r.get('close'), r.get('EE'))})
-        tiers[tag].append(d)
+        d.update(state4(repr_of(R4, r['key'])))
+        d['gap_to_EE'] = _gap_pct(r.get('close'), r.get('EE'))
+        tiers[d['tier']].append(d)
     return tiers
 
 
 def _divergence(P1, R4, WARN1):
-    """【六】分歧判定：工业品判分歧 / 农产品判「多头抵抗」"""
+    """唯一准入：板块当前弱背景 + 4h非多 + 日线仍多但偏弱。
+
+    排名只作补充证据。农产品特例须平多后空仓且未破4h EE。
+    当前板块状态不冒充近5个交易日事件窗口。
+    """
     sectors, items = [], []
-    for s in SECTORS:
-        short_, gone_ = sector_mood(P1, s)
-        if len(short_) + len(gone_) < 2:
-            continue
-        hits = []
-        for b in SECTORS[s]:
+    for sector in SECTORS:
+        short_, gone_ = sector_mood(P1, sector)
+        mood = len(short_) + len(gone_) >= 2
+        if mood:
+            sectors.append(dict(sector=sector, stype=stype(sector), short=short_, gone=gone_,
+                                mood_n=len(short_) + len(gone_), basis='当前持空/空仓状态，非近5日事件'))
+        for b in SECTORS[sector]:
             r = P1.get(b)
             if not r or r.get('pos') != 1:
-                continue                                  # 只判日线仍多头
-            r4 = repr_of(R4, r['key'])
-            if r.get('score') is None or r4.get('score') is None or r4.get('pos') is None:
                 continue
-            s1, s4 = _sc(r), _sc(r4)
-            if s1 >= LEAD_1D and s4 >= LEAD_4H:
-                continue                                  # 龙头不判
-            if r4.get('pos') == 1:
-                continue                                  # 4h 仍持多不判
-            hits.append((b, r, r4))
-        if not hits:
-            continue
-        sectors.append({'sector': s, 'stype': stype(s),
-                        'short': short_, 'gone': gone_,
-                        'mood_n': len(short_) + len(gone_)})
-        for b, r, r4 in sorted(hits, key=lambda x: _sc(x[1])):
-            s1, s4 = _sc(r), _sc(r4)
-            close, DD, EE = r.get('close'), r.get('DD'), r.get('EE')
-            chg = r.get('rank_change')
-            c2 = (s1 > 0 and close is not None and DD is not None and close >= DD)
-            c3 = (s4 >= TIER_4H)
-            c4 = (isinstance(chg, int) and not isinstance(chg, bool) and chg >= 0)
+            r4 = repr_of(R4, r['key'])
+            state = state4(r4)
+            s1, s4 = r.get('score'), r4.get('score')
+            if r4.get('pos') not in (-1, 0, 1):
+                continue
+            if r4['pos'] == 1 and state['below_EE_4h'] is not True:
+                continue
+            close, dd, ee = (r.get(k) for k in ('close', 'DD', 'EE'))
             warn = b in WARN1
-            weak = s4 < 0
+            below_dd = close is not None and dd is not None and close < dd
+            below_ee = close is not None and ee is not None and close < ee
+            daily_weak = warn or below_dd or (s1 is not None and s1 < LEAD_1D)
+            chg = r.get('rank_change')
+            c2 = s1 is not None and s1 > 0 and close is not None and dd is not None and close >= dd
+            c3 = (r4['pos'] == 0 and (r4.get('last') or {}).get('type') == 'SP'
+                  and state['below_EE_4h'] is False and s4 is not None and s4 >= TIER_4H)
+            c4 = isinstance(chg, int) and not isinstance(chg, bool) and chg >= 0
             d = _row(r)
-            d.update({'score_4h': s4, 'in_warning': warn,
-                      'c2': c2, 'c3': c3, 'c4': c4,
-                      'gap_to_EE': _gap_pct(close, EE), 'sector_name': s})
-            if stype(s) == '农':
-                if c2 and c3 and c4:
-                    d['verdict'], d['level'] = '多头抵抗', '🟡'
-                else:
-                    d['verdict'], d['level'] = '未全中(回落工业品口径)', None
-                    d = _industrial_grade(d, s1, s4, warn, weak)
+            d.update(state)
+            d.update(sector_name=sector, in_warning=warn, c1=mood, c2=c2, c3=c3, c4=c4,
+                     gap_to_EE=_gap_pct(close, ee), daily_weak=daily_weak)
+            why = [state['state_4h']]
+            if warn: why.append('挂日线多头预警')
+            if below_dd: why.append('日线收盘低于DD')
+            if s1 is not None and s1 < LEAD_1D: why.append(f'日线评分低于{LEAD_1D}')
+            if mood and stype(sector) == '农' and (s1 is None or s4 is None or close is None or dd is None or chg is None or state['below_EE_4h'] is None):
+                verdict, level = '待核验', '⚪'
+                why.append('抵抗条件证据缺失，不能当作条件明确失败')
+            elif mood and stype(sector) == '农' and c2 and c3 and c4:
+                verdict, level = '多头抵抗', '🟡'
+                why.append('四项条件已核验；仅为候选，不推断资金流')
+            elif mood and r4['pos'] != 1 and daily_weak:
+                verdict = '分歧'
+                level = '🔴' if warn or below_ee or (s1 is not None and s1 < 0) else '🟠'
+                why.append('板块当前持空/空仓不少于2只')
             else:
-                d = _industrial_grade(d, s1, s4, warn, weak)
+                verdict, level = '单只预警', '⚠️'
+                why.append('未满足板块级分歧全部条件；不等于恢复持多')
+            d.update(verdict=verdict, level=level, why=why)
             items.append(d)
-    return {'sectors': sectors, 'items': items}
+    return dict(sectors=sectors, items=items, basis='当前状态；未使用近5交易日窗口')
 
 
 def _attach_4h(rows, R4, prev_date=None):
@@ -517,6 +546,7 @@ def _attach_4h(rows, R4, prev_date=None):
     仅写 JSON，不影响 12 段文本输出。"""
     for r in rows:
         r4 = repr_of(R4, r.get('key', ''))
+        r.update(state4(r4))
         r['score_4h'] = r4.get('score')
         r['pos_4h'] = r4.get('pos')
         r['in_long_trend_4h'] = r4.get('pos') == 1
@@ -524,32 +554,14 @@ def _attach_4h(rows, R4, prev_date=None):
         signals = r4.get('recent_signals') or []
         last = r4.get('last') or {}
         touches = [iso_day(d) for d in r.get('retest_dates') or [] if iso_day(d)]
-        r['repaired'] = bool(r4.get('pos') == 1 and last.get('type') == 'BK'
-            and prev_date and iso_day(last.get('date')) and iso_day(last['date']) > prev_date
+        r['reopened_long'] = bool(r4.get('pos') == 1 and last.get('type') == 'BK'
+            and prev_date and iso_day(last.get('date')) and iso_day(last['date']) > prev_date)
+        r['repaired'] = bool(r['reopened_long'] and r['below_EE_4h'] is False
             and len(signals) >= 2 and signals[-2].get('type') == 'SP'
             and signals[-2].get('date', '') < last['date']
             and touches and max(touches) <= iso_day(last['date']))
         r['last_signal_4h'] = last
     return rows
-
-
-def _industrial_grade(d, s1, s4, warn, weak):
-    """工业品口径：4h 转负或挂预警 → 分歧；否则按回踩"""
-    if weak or warn:
-        d['verdict'] = '分歧'
-        d['level'] = '🔴' if (s1 < 0 or warn) else '🟠'
-        why = []
-        if s4 < 0:
-            why.append(f"4h转负({_f2(s4)})")
-        if warn:
-            why.append("挂日线预警")
-        if s1 < 0:
-            why.append(f"日线转负({_f2(s1)})")
-        d['why'] = why
-    else:
-        d['verdict'], d['level'] = '回踩', '✅'
-        d['why'] = []
-    return d
 
 
 def _turn(scr1, scr4, P1, R4=None):
@@ -593,6 +605,8 @@ def _rank_radar(scr1):
             d = _row_bucket(it)
             d['risen'] = isinstance(chg, int) and not isinstance(chg, bool) and chg >= 3
             d['fallen'] = isinstance(chg, int) and not isinstance(chg, bool) and chg <= -3
+            d['rank_note'] = ('仍持空但评分已转正，不代表自动出榜' if side == 'short_trend' and it.get('score') is not None and it['score'] > 0
+                              else '相对名次变化，不能单独推断资金流或开仓信号')
             rows.append(d)
         out[side] = rows
     return out
@@ -673,7 +687,7 @@ def render_text(f: dict) -> str:
     L.append(f"  ── 双强龙头 共 {len(f['leaders']['dual'])} 只")
     for r in f['leaders']['absolute']:
         L.append(f"  🥇★{r['code']:7s}{r['name']:12s}1d={_f2(r['score']):>7} 4h={_f2(r['score_4h']):>7} "
-                 f"rank={r['rank']}({_sign(r['rank_change'])}) ← 日线绝对龙头（4h 仅弱正但从未转负）")
+                 f"rank={r['rank']}({_sign(r['rank_change'])}) ← 日线绝对龙头（4h 当前弱正；不推断历史）")
     L.append("  🥈 准龙头：")
     for r in f['leaders']['quasi']:
         L.append(f"      {r['code']:7s}{r['name']:12s}1d={_f2(r['score']):>7} 4h={_f2(r['score_4h']):>7} "
@@ -681,20 +695,18 @@ def render_text(f: dict) -> str:
 
     L.append("\n" + W * 112)
     L.append("【五】日线多头 × 4h 状态分档（中性描述，结论交第六段）")
-    TAG = {'4h强势': '✅ 4h强势', '4h贴零': '🟡 4h贴零（正值但弱）',
-           '4h微负': '🟠 4h微负', '4h破位': '🚨 4h破位'}
     flat = []
     for tag, rows in f['long_4h_tiers'].items():
         flat.extend((tag, r) for r in rows)
     for tag, r in sorted(flat, key=lambda x: -_sc(x[1])):
         L.append(f"  {r['code']:7s}{r['name']:12s}1d={_f2(r['score']):>7} 4h={_f2(r['score_4h']):>7} "
                  f"close={str(r['close']):<10}DD={_f2(r['DD'])} EE={_f2(r['EE'])} "
-                 f"距EE={_f2(r['gap_to_EE'])}% rank={r['rank']}({r['rank_change']})  {TAG[tag]}")
+                 f"距EE={_f2(r['gap_to_EE'])}% rank={r['rank']}({r['rank_change']})  {r['state_4h']} / {tag}")
 
     L.append("\n" + W * 112)
     L.append("【六】分歧判定 ★核心★ —— 工业品判分歧 / 农产品判「多头抵抗」")
-    L.append("  工业品分歧 = ① 板块氛围坏 ② 4h 已平仓（不在 4h 多头榜） ③ 4h 转负 或 挂日线多头预警")
-    L.append(f"  农产品抵抗 = ① 板块氛围坏 ② 日线 score>0 且 close≥DD ③ 4h ≥ {c['TIER_4H']} ④ rank_change ≥ 0（4 条全中）")
+    L.append("  分歧 = ① 板块当前持空/空仓≥2 ② 4h非多 ③ 日线仍多但评分<4.5/挂预警/收破DD")
+    L.append(f"  农产品抵抗 = ① 板块氛围坏 ② 日线 score>0 且 close≥DD ③ SP后空仓且未破4h EE、评分 ≥ {c['TIER_4H']} ④ rank_change ≥ 0（4 条全中）")
     L.append("-" * 112)
     by_sector = defaultdict(list)
     for it in f['divergence']['items']:
@@ -706,7 +718,7 @@ def render_text(f: dict) -> str:
             if s['stype'] == '农' and it['verdict'] == '多头抵抗':
                 L.append(f"     🟡 {it['code']:6s}{it['name']:12s}1d={_f2(it['score']):>7} 4h={_f2(it['score_4h']):>7} "
                          f"close={it['close']} DD={_f2(it['DD'])} EE={_f2(it['EE'])} rank={it['rank']}({it['rank_change']})")
-                L.append(f"        → ✅ 4/4 全中 → 【多头抵抗】按回踩关注（不砍、可低吸）；日线破 EE={_f2(it['EE'])} 才算失败")
+                L.append(f"        → ✅ 4/4 全中 → 【多头抵抗】候选观察（非新开仓信号）；日线破 EE={_f2(it['EE'])} 才算失败")
             elif s['stype'] == '农':
                 L.append(f"     ❌ {it['code']:6s}{it['name']:12s}1d={_f2(it['score']):>7} 4h={_f2(it['score_4h']):>7} "
                          f"条件2={it['c2']} 条件3={it['c3']} 条件4={it['c4']} → 未全中，回落到工业品口径")
@@ -715,16 +727,16 @@ def render_text(f: dict) -> str:
                          f"距EE={_f2(it['gap_to_EE'])}% rank={it['rank']}({it['rank_change']}) → 分歧（{'；'.join(it['why'])}）")
             else:
                 L.append(f"     ✅ {it['code']:6s}{it['name']:12s}1d={_f2(it['score']):>7} 4h={_f2(it['score_4h']):>7} "
-                         f"→ 4h 未明显偏弱（≥0）→ 按【回踩】处理")
+                         f"→ {it['verdict']}（{'；'.join(it['why'])}）")
 
     L.append("\n" + W * 112)
     L.append("【七】阶段性转折")
-    L.append("  A. 4h 多转空 → 日线裁决（🟥共振空 / ⬜已离场 / 🟨日线仍多=回踩）")
+    L.append("  A. 4h 多转空 → 日线裁决（🟥共振空 / ⬜已离场 / 🟨日线仍多，分别核验）")
     MARK = {'共振空': '🟥共振空', '已离场': '⬜已离场', '日线仍多': '🟨日线仍多', '?': '?'}
     for it in f['turn']['A']:
         L.append(f"     {it['code']:6s}{it['name']:12s}4h={_f2(it['score']):>7} sig={it.get('signal_date')} | "
                  f"1dPOS={it['pos_1d']} 1dEE={it['EE_1d']} → {MARK.get(it['verdict'], it['verdict'])}")
-    L.append("\n  B. 4h 空转多 / 短转长预警（反向信号，多为假转折）")
+    L.append("\n  B. 4h 空转多 / 短转长预警（反向事件，需核验当前持仓）")
     for it in f['turn']['B']:
         L.append(f"     {it['code']:6s}{it['name']:12s}sig={it.get('signal_date')} 4h={_f2(it['score'])} 1dPOS={it['pos_1d']}")
     for nm, arr in f['turn']['warnings'].items():

@@ -6,7 +6,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-RULES_VERSION = 'summary-v2.0'
+RULES_VERSION = 'summary-v2.1'
 
 
 def iso_day(value):

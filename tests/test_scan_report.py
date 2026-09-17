@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """每日总结扫描器的判据回归测试（不依赖 data/ 产物，用构造数据跑纯函数）。
 
-覆盖方法论 v4 的核心判据：龙头三档、回踩 vs 分歧裁决树、农产品「多头抵抗」4 条硬条件。
+覆盖本项目采用的统一判据：龙头三档、回踩 vs 分歧裁决树、农产品「多头抵抗」4 条硬条件。
 任一判据被改动而结果没变 → 这里会红。
 """
 import unittest
@@ -44,6 +44,8 @@ class TestLeaders(unittest.TestCase):
               'xx2601_4h': _row('xx2601', 0.3, 100.0),
               'yy2601_4h': _row('yy2601', 1.2, 100.0),
               'zz2601_4h': _row('zz2601', 1.2, 100.0)}
+        for row in R4.values():
+            row['EE'] = row['close'] * 0.9
         L = sr._leaders(P1, R4)
         self.assertEqual([r['code'] for r in L['dual']], ['sc'])
         self.assertEqual([r['code'] for r in L['absolute']], ['xx'])
@@ -67,19 +69,19 @@ class TestDivergence(unittest.TestCase):
             row['pos'] = 0
         return P1, R4
 
-    def test_industrial_negative_4h_is_divergence(self):
+    def test_strong_daily_with_negative_4h_is_single_warning(self):
         P1, R4 = self._setup()
         d = sr._divergence(P1, R4, WARN1=set())
         got = {x['code']: x for x in d['items']}
-        self.assertEqual(got['l']['verdict'], '分歧')
-        self.assertEqual(got['l']['level'], '🟠')      # 日线仍正 → 减半
+        self.assertEqual(got['l']['verdict'], '单只预警')
+        self.assertEqual(got['l']['level'], '⚠️')
 
-    def test_industrial_weak_but_positive_is_retest(self):
-        """4h 转正是关键分界线：已平仓但 4h 未转负 → 判回踩，不判分歧"""
+    def test_positive_score_does_not_restore_closed_position(self):
+        """已平仓即保持非多提示；评分回暖不代表修复"""
         P1, R4 = self._setup()
         d = sr._divergence(P1, R4, WARN1=set())
         got = {x['code']: x for x in d['items']}
-        self.assertEqual(got['bz']['verdict'], '回踩')
+        self.assertEqual(got['bz']['verdict'], '单只预警')
 
     def test_warning_upgrades_to_red(self):
         """挂日线多头预警 → 直接 🔴，即使日线仍正"""
@@ -94,6 +96,7 @@ class TestDivergence(unittest.TestCase):
         R4 = {'m2701': _row('m2701', 0.02, 3385.0, DD=3371.75, EE=3342.33, rank_change=2)}
         P1.update({c: _row(c + '2610', -1, 100, pos=-1) for c in ('y', 'OI')})
         R4['m2701']['pos'] = 0
+        R4['m2701']['last'] = {'type':'SP', 'date':'2026-09-15'}
         d = sr._divergence(P1, R4, WARN1=set())
         self.assertEqual(d['items'][0]['verdict'], '多头抵抗')
         self.assertEqual(d['items'][0]['level'], '🟡')
@@ -104,6 +107,7 @@ class TestDivergence(unittest.TestCase):
         R4 = {'m2701': _row('m2701', 0.02, 3300.0, DD=3371.75, EE=3342.33, rank_change=2)}
         P1.update({c: _row(c + '2610', -1, 100, pos=-1) for c in ('y', 'OI')})
         R4['m2701']['pos'] = 0
+        R4['m2701']['last'] = {'type':'SP', 'date':'2026-09-15'}
         d = sr._divergence(P1, R4, WARN1=set())
         self.assertNotEqual(d['items'][0]['verdict'], '多头抵抗')
 
