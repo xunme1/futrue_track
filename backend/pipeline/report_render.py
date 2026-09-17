@@ -1,4 +1,4 @@
-"""兼容原两阶段流程：读取 v2 facts 与可选叙事，生成 HTML / MD / JSON。"""
+"""兼容原两阶段流程：读取 v3 facts 与可选叙事，生成 HTML / MD / JSON。"""
 import argparse
 
 from backend.pipeline.generate_report import ROOT, read_json, save_report
@@ -21,7 +21,7 @@ def main():
         path = candidates[-1]
     try:
         facts = read_json(path)
-        if facts.get("facts_version") != 2:
+        if facts.get("facts_version") != 3:
             ap.exit(2, "[错误] 旧版 facts 请先用 report_facts 重新生成；不静默套用新版规则。\n")
         narrative_path = REPORTS_DIR / "narrative" / f"narrative_{facts['report_date']}.json"
         narrative = read_json(narrative_path) if narrative_path.exists() else None

@@ -158,7 +158,7 @@ class ReportGeneratorTests(unittest.TestCase):
         for s in make_sections(f, n):
             self.assertTrue(all(len(r) == len(s["headers"]) for r in s["rows"]), s["id"])
             self.assertIn(s["title"], render_markdown(f, n))
-        self.assertEqual(len(prompt_package(f)["tasks"]), 7)
+        self.assertEqual(set(prompt_package(f)["stages"]), {"analysis", "editor", "schema"})
 
     def test_cli_repeat_retains_baseline_and_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,6 +179,60 @@ class ReportGeneratorTests(unittest.TestCase):
             self.assertEqual(second["header"]["previous_date_1d"], "2026-09-11")
             self.assertTrue(file.with_suffix(".html").exists())
             self.assertTrue(file.with_suffix(".md").exists())
+    def test_cohort_groups_by_entry_date(self):
+        b = bundle(keys=("a2601", "b2601", "c2601"), positions=(1, 1))
+        rows = b["screen_1d"]["buckets"]["long_trend"]
+        for r in rows:
+            r["score_entry_date"] = "2026-08-31"
+        rows[0]["close"] = 99   # 破 EE 100 → 受压且风险升为重点
+        rows[1]["close"] = 103  # 距 EE 约 3%，不贴线
+        rows[2]["close"] = 103
+        f = compute_facts(b)
+        self.assertEqual(len(f["cohorts"]), 1)
+        c = f["cohorts"][0]
+        self.assertEqual((c["entry_date"], c["side"], c["size"]), ("2026-08-31", "多头", 3))
+        self.assertEqual(c["stressed"], 1)
+        self.assertEqual(c["stressed_keys"], ["a2601"])
+        self.assertEqual(c["flagged"], 1)
+        # 同批不足 3 只不成批
+        small = bundle(keys=("a2601", "b2601"), positions=(1, 1))
+        for r in small["screen_1d"]["buckets"]["long_trend"]:
+            r["score_entry_date"] = "2026-08-31"
+        self.assertEqual(compute_facts(small)["cohorts"], [])
+
+    def test_board_trend_from_rank_totals(self):
+        b = bundle()
+        b["screen_1d"]["buckets"]["long_trend"][0]["rank_history"] = [
+            {"date": "2026-09-11", "rank": 1, "total": 40}, {"date": "2026-09-14", "rank": 1, "total": 35}]
+        f = compute_facts(b)
+        self.assertEqual(f["board_trend"]["dates"], ["2026-09-11", "2026-09-14"])
+        self.assertEqual(f["board_trend"]["long_trend"], [40, 35])
+        self.assertIsNone(f["board_trend"]["short_trend"])
+        # 行间 total 不一致则整体弃用，不拼接错误口径
+        b2 = bundle(keys=("a2601", "b2601"), positions=(1, 1))
+        b2["screen_1d"]["buckets"]["long_trend"][0]["rank_history"] = [{"date": "2026-09-11", "rank": 1, "total": 40}]
+        b2["screen_1d"]["buckets"]["long_trend"][1]["rank_history"] = [{"date": "2026-09-11", "rank": 2, "total": 41}]
+        f2 = compute_facts(b2)
+        self.assertIsNone(f2["board_trend"]["long_trend"])
+        self.assertTrue(any("不一致" in n for n in f2["quality_notes"]))
+
+    def test_bucket_history_seeded_and_accumulated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, b in (("latest", bundle()), ("previous", bundle("2026-09-11"))):
+                directory = root / name
+                directory.mkdir()
+                for key, value in b.items():
+                    filename = "contracts.json" if key == "contracts" else key + "_now.json"
+                    (directory / filename).write_text(json.dumps(value), encoding="utf-8")
+            args = ["--input-dir", str(root / "latest"), "--output-dir", str(root / "out")]
+            main([*args, "--previous-dir", str(root / "previous")])
+            main(args)
+            facts = json.loads((root / "out/daily_report_2026-09-15.json").read_text())["facts"]
+            self.assertEqual(facts["bucket_trend"]["long_trend"], [["2026-09-11", 1], ["2026-09-14", 1]])
+            history = json.loads((root / "out/counts_history.json").read_text())["1d"]
+            self.assertEqual(sorted(history), ["2026-09-11", "2026-09-14"])
+            self.assertEqual(history["2026-09-14"]["long_trend"], 1)
 
 
 if __name__ == "__main__":

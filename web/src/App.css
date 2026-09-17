@@ -202,3 +202,27 @@ button { font: inherit; }
   .report-list { width: 100%; max-height: 200px; }
   .report-viewer { min-height: 60vh; }
 }
+
+/* 日报独立阅读容器：归档按需打开，正文占满可用窗口。 */
+.report-mask { padding: 0; }
+.modal-panel.report-panel { width: 100vw; max-width: none; height: 100dvh; max-height: none; padding: 0; border-radius: 0; display: flex; flex-direction: column; overflow: hidden; }
+.report-toolbar { display: flex; align-items: center; gap: 18px; flex-shrink: 0; padding: 12px 22px; background: #132b37; border-bottom: 1px solid #35505c; }
+.report-toolbar .report-title { margin: 0; font-size: 15px; white-space: nowrap; }
+.report-date-picker { display: flex; align-items: center; gap: 8px; color: #bbcdd3; font-size: 12px; }
+.report-date-picker select { background: #203d49; border: 1px solid #45616e; border-radius: 5px; color: #edf5f5; padding: 6px 9px; font: inherit; }
+.report-data-date { font-size: 12px; color: #a3bac3; }
+.report-toolbar-actions { display: flex; align-items: center; gap: 15px; margin-left: auto; }
+.report-toolbar-actions button, .report-toolbar-actions a { color: #dbe8eb; background: none; border: 0; font-size: 12px; white-space: nowrap; cursor: pointer; text-decoration: none; padding: 4px; }
+.report-panel .report-body { gap: 0; position: relative; }
+.report-panel .report-viewer { min-height: 0; height: 100%; }
+.report-panel .report-viewer iframe { border: 0; border-radius: 0; width: 100%; height: 100%; }
+.report-panel .report-list { padding: 14px; background: #172d39; width: 270px; }
+@media (max-width: 700px) {
+  .report-toolbar { padding: 10px 12px; gap: 10px; flex-wrap: wrap; }
+  .report-toolbar .report-title { font-size: 14px; }
+  .report-toolbar-actions { gap: 10px; }
+  .report-data-date { display: none; }
+  .report-toolbar-actions a { display: none; }
+  .report-panel .report-body { flex-direction: row; }
+  .report-panel .report-list { position: absolute; inset: 0 auto 0 0; max-height: none; width: min(85vw, 310px); z-index: 2; box-shadow: 12px 0 30px #0005; }
+}

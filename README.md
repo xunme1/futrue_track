@@ -28,9 +28,10 @@ future/
 │   ├── pipeline/
 │   │   ├── download.py        # 增量下载脚本：数据源→本地行情库（每日运行，只补新数据）
 │   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
-│   │   ├── generate_report.py # 日报单文件入口：事实+规则短评→HTML/MD/JSON+分节LLM提示词
+│   │   ├── generate_report.py # 日报单文件入口：跨日事件+价位图→HTML/MD/JSON+两阶段LLM提示词
 │   │   ├── report_facts.py    # 兼容旧入口：生成v2事实、快照与提示词
-│   │   └── report_render.py   # 兼容旧入口：v2事实+可选叙事→归档报告
+│   │   ├── report_render.py   # 兼容旧入口：v2事实+可选叙事→归档报告
+│   │   └── report_narrator.py # 可选：两阶段模型分析与成品复核（密钥只走 DEEPSEEK_API_KEY 环境变量）
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -102,7 +103,7 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python tools/make_dashboard.py        # 4. 重建旧版离线快照（可选）
 
 # 每日日报（服务器日更 refresh_daily.sh 已自动执行第 5 步）：
-.venv/Scripts/python -m backend.pipeline.generate_report  # 5. 一步生成HTML/MD/JSON、事实与分节LLM提示词
+.venv/Scripts/python -m backend.pipeline.generate_report  # 5. 一步生成HTML/MD/JSON、事实与两阶段LLM提示词
 #    默认纯规则生成，不需要模型密钥；支持可选叙事JSON和旧的两阶段入口。
 #    看板「📰 日报」入口回看历史；详细用法见 docs/report_contract.md
 
@@ -127,7 +128,7 @@ python backend/pipeline/generate_report.py --input-dir data/report_inputs/latest
 
 首次比较可加 `--previous-dir` 指向上一数据日快照目录；之后自动复用历史归档。
 默认报告日为数据日的下一工作日，生产环境可用 `--calendar` 提供交易所日历。
-版面与口径的改动、样例数据来源和验证记录见 [日报重构说明](docs/report_redesign.md)，模型分节提示词与叙事格式见 [日报契约](docs/report_contract.md)。
+版面与口径的改动、样例数据来源和验证记录见 [日报重构说明](docs/report_redesign.md)，模型两阶段提示词与叙事格式见 [日报契约](docs/report_contract.md)。
 
 ### 4 小时看板
 

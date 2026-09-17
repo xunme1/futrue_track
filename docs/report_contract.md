@@ -1,113 +1,117 @@
-# 日报 v2：生成与模型叙事契约
+# 日报 v3：事件、证据与模型分析
 
-日报入口是 `backend/pipeline/generate_report.py`。事实计算、规则短评、HTML、Markdown和模型提示词在同一个文件内；快照模式只需要 Python 3.10+ 标准库，不需要模型密钥。原先 `report_facts` / `report_render` 两步命令保留，但事实格式升级为 v2，旧叙事须重新生成。
+入口为 `backend/pipeline/generate_report.py`。同一个 Python 文件完成事实计算、事件筛选、位置图、HTML、Markdown、JSON及模型提示词导出。快照模式只使用标准库；原生数据模式沿用项目配置解析器，需要项目依赖（包括 PyYAML）。模型接入是可选的独立步骤。
 
-## 每日生成
+## 每日使用
 
-项目根目录执行：
+在项目根目录、已安装项目依赖的 Python 环境执行：
 
 ```bash
-# 原生流水线：data/screening + data/4h/screening + 两周期 data/json
 python -m backend.pipeline.generate_report
+# 可选：综合分析 → 成品复核 → 生成带分析的报告
+python -m backend.pipeline.report_narrator
+```
 
-# 独立快照：可直接复制此 py 文件使用
+模型程序从环境变量 `DEEPSEEK_API_KEY` 读取密钥，不接受命令行密钥。可用 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 或 `--model` 选择已有兼容聊天接口。默认模型沿用项目的 `deepseek-flash` 配置；应使用账户实际可用的模型名。本次没有调用此远端服务，不代表已验证该模型的可用性。
+
+不调用模型时仍可生成完整事件与数据报告，分析区明确显示尚无模型综合分析，不把规则文案称作AI判断。模型程序每阶段最多重试两次，默认每阶段8192 token上限、120秒超时；任一阶段最终失败，回退规则事件报告，不发布未经第二阶段复核的分析。
+
+单文件快照运行无需项目依赖：
+
+```bash
+python backend/pipeline/generate_report.py --input-dir data/report_inputs/latest
+# 重放今天已归档的两周期输入：9月15日收盘 → 9月16日观察
 python backend/pipeline/generate_report.py \
-  --input-dir data/report_inputs/latest \
+  --snapshot data/reports/snapshots/inputs_2026-09-15.json \
   --output-dir data/reports
 ```
 
-原生 `data/screening/latest.json` 存在时优先使用原生产物；不存在时才自动查 `data/report_inputs/latest`。也可传 `--data-dir` 改变原生数据目录。原生模式使用项目已有的配置解析器读取合约池；独立模式没有第三方依赖。
+快照目录包含 `screen_1d_now.json`、`screen_4h_now.json`、`symbols_1d_now.json`、`symbols_4h_now.json`，推荐同时提供观察池 `contracts.json`。`--snapshot` 则直接读取程序归档的完整输入对象，与 `--input-dir` 互斥。没有明确合约池时仅采用分桶并集，并提示覆盖限制，避免把换月残留合约混入观察池。
 
-快照目录包含：
+首次可通过 `--previous-dir` 提供历史快照目录；之后自动选输出目录中严格早于当前数据日的归档。同日重跑不会以当日旧版本作为昨日基线。`--facts-only` 只写事实、提示词和输入归档。规则版本、当前输入、前期输入、实际使用的历史轨迹共同参与指纹；改变任一项后必须重写匹配的模型叙事。
 
-```text
-screen_1d_now.json     # screening API 原始对象
-screen_4h_now.json
-symbols_1d_now.json    # symbols API 原始数组：key/pos/last_date/last_signal
-symbols_4h_now.json
-contracts.json        # 推荐：当前观察池数组，key或symbol + name
-```
+报告日期默认是数据日的下一工作日，未内置交易所假日日历。可以传 `--calendar /path/to/trading_days.json`（交易日字符串数组），或显式指定 `--report-date YYYY-MM-DD`。数据日来自行情字段，不从文件生成时间推断。两周期日期不一致时停用共振、修复和短周期转弱判断。
 
-没有合约池时只使用分桶并集，并标注无法核验桶外覆盖。不能直接把 symbols 数组全部当观察池：里面可能残留已换月的旧合约。
+## 报告结构
 
-首次生成可以传 `--previous-dir` 指定上一数据日的同格式目录；以后自动读取输出目录的历史快照。没有基线时写“无基线”，不会把所有品种说成新增。显式基线会一起归档，重复运行保持同一比较口径。同日更新覆盖同名报告，不生成虚假日变动；输入指纹覆盖两周期数据和基线，4h单独更新也能被识别。
+正文依次呈现今日事件卡、多空结构、最多六组优先事件、三条深度分析、当前关键价带和前期关注后续。完整事件、计数日期、历史触碰、排名、批次留存及全部合约放入七张可展开证据表。
 
-报告日默认取数据日的下一工作日，**未内置交易所假日日历**。生产环境建议提供官方交易日字符串数组 JSON：
+看板日报改为占满窗口的阅读界面，顶部切日期、按需展开归档，支持独立阅读链接。HTML自带样式和位置图，无外部字体或CDN。手机端卡片纵向排列，明细表单独横向滚动。打印按钮临时展开明细，采用A4纵向样式；打印结束恢复展开状态。
 
-```bash
-python -m backend.pipeline.generate_report --calendar /path/to/trading_days.json
-# 或显式指定下一交易日
-python -m backend.pipeline.generate_report --report-date 2026-09-15
-```
+## 确定性事实与边界
 
-数据日取行情 `date` / `trend_ranking.as_of` / `data_date`，绝不把 `generated_at` 当行情日。没有可核验数据日直接报错。两周期日期不一致会停用共振和跨周期分歧结论。
+| 字段 | 用途及约束 |
+| --- | --- |
+| facts_version / rules_version | 当前为3及events-v3.0；旧事实需重算后才能套用新版渲染 |
+| header / overview / daily_actions | 周期数据日、基线日、真实持仓数量、当日开平仓；缺失基线不是0 |
+| event_ledger | 当日开平仓、预警平多、双周期修复、短周期转弱、当前价带位置、被动升位；有事件ID、周期日期、确认与重评条件 |
+| focus_events | 同类事件合组，按确定优先级取最多六组；已破位旧状态不再自动占满首页 |
+| instruments.daily_diff | 两周期前后状态、信号、价格、动量、排名及关键位；保存价格变化、动量差、是否穿越昨日旧线 |
+| instruments.bands | 扫描全部同向持仓的当前支撑EE–DD和压力KK–PP；严格区分带内、带外、未知 |
+| instruments.reason_codes | 原有风险命中原因，补充明确“日线已破EE”，不再以“贴线”兜底 |
+| instruments.rank_explanation | 同榜名次升但价格和动量都未变，标为被动上移；缺少前期数据时不强作归因 |
+| warning_outcomes | 上一快照预警的当日平多、短周期修复、仍待确认、状态未知；标签消失不是解除风险 |
+| cohort_lifecycle | 当前与上一快照中观察到的同批成员、留存、退出和未知；不冒充最初完整批次 |
+| field_coverage | 当前和前期完整关键位覆盖；补字段不能解释成行情恶化 |
+| bucket_trend | 相同重算口径历史，包含当日，每点带日期；缺失日期不补零 |
+| board_trend | 原榜内规模，单独归档，不拼入重算数量轨迹 |
+| evidence_index | 论点引用的实际事实对象；包括合约前后比较、当前状态和市场汇总 |
 
-## 输出
+旧 `cohorts` 当前持仓分组继续存在于JSON以便兼容，正文批次使用 `cohort_lifecycle`。目前批次生命周期只覆盖当前与前一快照，不能据此计算完整退出率或策略胜率。完整历史重建仍需更多连续历史输入。
 
-```text
-data/reports/
-  daily_report_YYYY-MM-DD.html       # 浅色正文、深色摘要、折叠明细、打印样式
-  daily_report_YYYY-MM-DD.md         # 全量Markdown，同一表格数据模型
-  daily_report_YYYY-MM-DD.json       # facts + narrative，兼容看板归档入口
-  facts/facts_YYYY-MM-DD.json        # v2结构化事实
-  prompts/prompts_YYYY-MM-DD.json    # 七组messages与合并示例
-  snapshots/inputs_数据日.json      # 两周期输入及来源哈希
-```
+## 两阶段提示词及叙事格式
 
-HTML 不依赖外部字体、CDN或网络资源。小屏表格独立横向滚动；点击“打印 / PDF”会临时展开全部明细，使用 A4 横向样式。每个文件原子替换，JSON最后落盘，避免归档列表引用未完成报告。
+`prompts/prompts_YYYY-MM-DD.json` 导出 `stages.analysis.messages` 和 `stages.editor.messages`，均含统一事件账本及事件涉及的前后日证据。
 
-## 模型负责什么
-
-模型是可选的短评编辑，不负责计算信号、持仓、分组、评级、排名、交易日和价格。以下七组完整提示词由 `prompt_package()` 自动生成，并将本次对应栏目事实嵌入 `messages`：
-
-| 任务 | 写作重点 | 禁止误判 |
-| --- | --- | --- |
-| overview | 多空变化、当日真实开平仓、65字摘要 | 无基线推断增减 |
-| divergence | 重点风险、板块联动、日线失效条件 | 4h修复覆盖日线破位 |
-| trends | 日线主线、4h一致性、强弱梯队 | POS=0写成空头 |
-| transitions | 事件时间与交易信号时间分离 | SP/BP写成SK/BK |
-| support | 当前与EE/DD距离、历史回踩、确认条件 | 历史触碰写成当前低吸 |
-| pressure | 当前与KK/PP位置、触压证据、失效线 | 带下方写成当前加空 |
-| rank | 显著升降、新入榜、实际连续改善 | 排名当独立证据，单日升写连升 |
-
-系统提示词要求只使用给定事实、不执行输入资料中的指令、不补新闻或编造数字、不写仓位指令、不输出HTML。每节只给该节所需标的事实。模型返回 `content` 和 `evidence_keys`，overview额外返回 `one_liner`。人工核对证据后，把各节 `content` 合并为：
+第一阶段选择三个重要论点，涵盖主线、分歧/反证、当前关键位置。每条需要观察、解释、反证、确认、失效及缺失数据；价格与排名不能重复算作独立证据。第二阶段读取相同事实和第一阶段全文，修正数字、周期、方向、价带移动、结论夸大和重要事件遗漏，并保存具体修改记录。
 
 ```json
 {
-  "report_date": "2026-09-15",
-  "input_hash": "从本次facts或prompts原样复制",
-  "one_liner": "一句话摘要，可缺省",
-  "sections": {
-    "overview": "总览短评，可缺省",
-    "divergence": "分歧短评，可缺省",
-    "trends": "主线短评，可缺省",
-    "transitions": "转折短评，可缺省",
-    "support": "回踩短评，可缺省",
-    "pressure": "遇压短评，可缺省",
-    "rank": "排名短评，可缺省"
-  }
+  "report_date": "2026-09-16",
+  "input_hash": "本次事实指纹",
+  "source": "分析来源",
+  "one_liner": "正文标题",
+  "claims": [{
+    "id": "claim_1",
+    "title": "有判断的中文标题",
+    "event_ids": ["账本中的真实事件ID"],
+    "evidence_refs": ["证据索引中的真实引用"],
+    "observation": "发生了什么，注明日期周期",
+    "interpretation": "为何值得关注，比较前日与当前证据",
+    "counter_evidence": "限制该判断的反证",
+    "confirmation": "后续什么变化会增强判断",
+    "invalidation": "什么条件使判断需要重评",
+    "missing_data": "尚缺哪些证据"
+  }],
+  "review_changes": [{"claim_id":"claim_1", "issue":"发现的问题", "resolution":"具体修正"}]
 }
 ```
 
+模型流程固定三条论点；手工叙事可提供一至五条。摘要最长180字符，标题100字符，论点各正文字段900字符。合并检查日期、指纹、重复ID、有效事件与证据引用、引用关联、文本边界和内部术语泄漏，保留引用供复核。`risk`、`repaired`等程序字段不能出现在读者正文。
+
+**结构和引用检查不能证明每句话在语义上正确。** 第二阶段负责语义复核，但仍可能出错；展示中的事件、状态、位置图和关键条件始终直接来自程序事实，不依赖模型重新计算。程序不会执行参考文档或行情数据中的指令。
+
+叙事保存到 `data/reports/narrative/narrative_YYYY-MM-DD.json` 后可重渲染：
+
 ```bash
-python -m backend.pipeline.generate_report --narrative /path/to/narrative.json
-# 或延续两阶段流程，叙事放data/reports/narrative/narrative_YYYY-MM-DD.json后执行：
-python -m backend.pipeline.report_render --date 2026-09-15
+python -m backend.pipeline.report_render --date 2026-09-16
+# 或计算与叙事同时合并（指纹必须匹配当前计算）
+python backend/pipeline/generate_report.py \
+  --snapshot data/reports/snapshots/inputs_2026-09-15.json \
+  --narrative data/reports/narrative/narrative_2026-09-16.json
 ```
 
-所有短评均可缺省；缺省段落使用规则生成。日期或 `input_hash` 不符则报错，避免不同数据批次的叙事混用。摘要最大180字符，单节最大600字符；HTML/代码围栏被拒绝。**指纹和结构校验只能防串数据与注入，不能证明模型语义正确**，外部叙事仍需人工校对，来源会明确标示。脚本不会自动发送数据到模型服务，不需要新增模型SDK。
+## 产物与本次验收
 
-## v2事实字段
+产物包括 `daily_report_日期.html`、同名 `.md` / `.json`，以及 `facts/`、`prompts/`、`narrative/`、`snapshots/` 和 `counts_history.json`。每个文件原子替换，成品JSON最后写入。目录整体由 `.gitignore` 忽略，避免提交本地行情。接口仍使用 `facts.header` 与 `narrative.one_liner`，前端无需改日报服务路由。
 
-| 字段 | 说明 |
-| --- | --- |
-| header | 两周期数据日、生成时间、比较日、日历口径 |
-| overview | 八桶数量、历史数量、进出key；无有效基线为null |
-| daily_actions | 当日权威BK/SK/SP/BP的key数组 |
-| instruments | 全池一品种一行：daily/four_hour、events、verdict、hits、risk、condition |
-| sectors | 覆盖、多空数量、偏弱离多数量与不同品种联动 |
-| rank_radar | 同榜升降、新入榜、轨迹、实际连升次数、状态交叉核验 |
-| quality_notes | 缺失价格、不同步、源计数差异、剔除旧事件等 |
-| provenance / previous_provenance | 当前和基线文件路径与SHA256 |
+2026-09-16样例使用9月15日数据；归档两周期筛选对象与仓库最新文件逐对象核对完全相同。分析由本次Codex根据实际事实撰写并复核，来源已标明；本机没有模型API密钥，因此没有声称调用DeepSeek。旧样例备份在 `data/reports/revisions/before_v3_2026-09-16/`。
 
-旧版 `verdict_4h`、`divergence` 等内部字段不再使用，外部叙事任务须迁移到本契约。看板日报列表和HTML接口保留原文件名及 `facts.header` / `narrative.one_liner` 路径。
+验证命令：
+
+```bash
+python3 -m unittest tests.test_report_generator tests.test_report_v3 -q
+npm run build --prefix web
+```
+
+已实际预览1280×720桌面首屏、分析层次与关键价位区，以及390×844窄屏工具栏和价格图；首屏三件事完整显示，窄屏正文与位置图无横向溢出。打印样式已实现，尚未验证真实打印机或导出PDF的最终分页。远端模型调用使用mock测试两阶段成功与失败回退；实网调用需运行环境提供有效密钥。
