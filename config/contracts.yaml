@@ -17,7 +17,7 @@ contracts:
   name: 铅
   category: 有色金属
   exchange: SHFE
-- symbol: cu2609.SHF
+- symbol: cu2610.SHF
   source: ricequant
   name: 铜
   category: 有色金属
@@ -32,7 +32,7 @@ contracts:
   name: 锌
   category: 有色金属
   exchange: SHFE
-- symbol: sn2609.SHF
+- symbol: sn2610.SHF
   source: ricequant
   name: 锡
   category: 有色金属
