@@ -92,11 +92,6 @@ contracts:
   name: 螺纹钢
   category: 黑色金属
   exchange: SHFE
-- symbol: bc2609.INE
-  source: ricequant
-  name: 国际铜
-  category: 有色金属
-  exchange: INE
 - symbol: lu2610.INE
   source: ricequant
   name: 低硫燃料油
