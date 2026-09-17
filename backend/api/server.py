@@ -14,6 +14,7 @@
 """
 import json
 import re
+from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -25,6 +26,8 @@ from ..core.timeframes import json_dir, screening_file
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 REPORTS_DIR = DATA_DIR / "reports"
+SCAN_DIR = REPORTS_DIR / "scan"
+NARRATIVE_DIR = REPORTS_DIR / "narrative"
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 app = FastAPI(title="期货指标监测 API", version="0.2.0")
 
@@ -122,46 +125,67 @@ def _check_report_date(date: str) -> str:
 
 @app.get("/api/reports")
 def reports():
-    """已归档日报列表（倒序）。日报由 backend.pipeline.report_facts/report_render 生成。"""
+    """已归档每日总结列表（倒序）。由 backend.pipeline.scan_report/summary_render 生成。"""
     out = []
     if not REPORTS_DIR.exists():
         return out
-    for fp in sorted(REPORTS_DIR.glob("daily_report_*.json"), reverse=True):
-        date = fp.stem.replace("daily_report_", "")
+    for fp in sorted(REPORTS_DIR.glob("daily_summary_*.html"), reverse=True):
+        date = fp.stem.replace("daily_summary_", "")
         if not _REPORT_DATE_RE.match(date):
             continue
-        meta = {"date": date,
-                "has_html": (REPORTS_DIR / f"daily_report_{date}.html").exists(),
+        meta = {"date": date, "has_html": True,
                 "data_date": None, "generated_at": None, "one_liner": None}
+        scan = SCAN_DIR / f"scan_{_infer_data_date(date)}.json"
         try:
-            with open(fp, encoding="utf-8") as f:
-                d = json.load(f)
-            facts = d.get("facts") or {}
-            meta["data_date"] = (facts.get("header") or {}).get("data_date_1d")
+            with open(scan, encoding="utf-8") as f:
+                facts = json.load(f)
+            meta["data_date"] = facts.get("data_date")
             meta["generated_at"] = facts.get("created_at")
-            meta["one_liner"] = (d.get("narrative") or {}).get("one_liner")
+            narrative = NARRATIVE_DIR / f"narrative_{date}.json"
+            if narrative.exists():
+                with open(narrative, encoding="utf-8") as f:
+                    meta["one_liner"] = (json.load(f) or {}).get("one_liner")
         except (OSError, json.JSONDecodeError):
             pass
         out.append(meta)
     return out
 
 
+def _infer_data_date(report_date: str) -> str:
+    """报告日期 → 数据日期（回退到上一工作日；精确值以扫描产物为准）"""
+    try:
+        d = datetime.strptime(report_date, "%Y-%m-%d").date()
+    except ValueError:
+        return report_date
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
 @app.get("/api/reports/{date}")
 def report_detail(date: str):
-    """某日归档日报 JSON（facts + narrative 合并）。"""
-    fp = REPORTS_DIR / f"daily_report_{_check_report_date(date)}.json"
-    if not fp.exists():
-        raise HTTPException(status_code=404, detail=f"无 {date} 的归档日报")
-    with open(fp, encoding="utf-8") as f:
-        return json.load(f)
+    """某日每日总结的事实 JSON（scan 产物）+ 叙事（若有）。"""
+    date = _check_report_date(date)
+    scan = SCAN_DIR / f"scan_{_infer_data_date(date)}.json"
+    if not scan.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的每日总结事实数据")
+    with open(scan, encoding="utf-8") as f:
+        facts = json.load(f)
+    narrative = NARRATIVE_DIR / f"narrative_{date}.json"
+    nar = None
+    if narrative.exists():
+        with open(narrative, encoding="utf-8") as f:
+            nar = json.load(f)
+    return {"report_date": date, "facts": facts, "narrative": nar}
 
 
 @app.get("/api/reports/{date}/html")
 def report_html(date: str):
-    """某日归档日报 HTML（供前端 iframe 直接展示）。"""
-    fp = REPORTS_DIR / f"daily_report_{_check_report_date(date)}.html"
+    """某日每日总结 HTML（供前端 iframe 直接展示）。"""
+    fp = REPORTS_DIR / f"daily_summary_{_check_report_date(date)}.html"
     if not fp.exists():
-        raise HTTPException(status_code=404, detail=f"无 {date} 的日报 HTML")
+        raise HTTPException(status_code=404, detail=f"无 {date} 的每日总结 HTML")
     return FileResponse(fp, media_type="text/html")
 
 

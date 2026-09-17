@@ -17,3 +17,4 @@ web/node_modules/
 web/*.tsbuildinfo
 frontend/dist/
 frontend/dashboard.html
+.workbuddy/

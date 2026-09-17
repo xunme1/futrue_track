@@ -28,8 +28,8 @@ future/
 │   ├── pipeline/
 │   │   ├── download.py        # 增量下载脚本：数据源→本地行情库（每日运行，只补新数据）
 │   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
-│   │   ├── report_facts.py    # 日报事实计算器：筛选榜单+看板产物→结构化事实 JSON
-│   │   └── report_render.py   # 日报合成渲染：事实+叙事（可选）→归档 HTML/JSON
+│   │   ├── scan_report.py     # 每日总结事实扫描：本地产物→结构化事实 JSON（判据 v4）
+│   │   └── summary_render.py  # 每日总结合成渲染：事实+叙事（可选）→归档 HTML
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -50,7 +50,7 @@ future/
 │   │   └── ricequant/         #     futures_daily / futures_weekly
 │   ├── json/                  #   看板数据（每品种一个 JSON）
 │   ├── csv/                   #   逐 bar 信号明细
-│   ├── reports/               #   每日日报归档（facts/ 叙事 narrative/ 快照 snapshots/ + daily_report_*.{html,json}）
+│   ├── reports/               #   每日总结归档（scan/ 事实 scan/ 叙事 narrative/ 快照 snapshots/ + daily_summary_*.html）
 │   └── screenshots/           #   验证截图
 │
 ├── docs/                      # 文档
@@ -100,11 +100,12 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.screen     # 3. 生成筛选榜单（data/screening/latest.json）
 .venv/Scripts/python tools/make_dashboard.py        # 4. 重建旧版离线快照（可选）
 
-# 每日日报（服务器日更 refresh_daily.sh 已自动执行第 5 步）：
-.venv/Scripts/python -m backend.pipeline.report_facts    # 5. 计算结构化事实（data/reports/facts/）
-.venv/Scripts/python -m backend.pipeline.report_render   # 6. 合成归档日报 HTML+JSON（data/reports/）
-#    两步之间可由 OpenClaw 龙虾 agent 按 docs/report_contract.md 写叙事 JSON
-#    （data/reports/narrative/，可缺省，缺失时模板兜底）；看板「📰 日报」入口回看历史日报
+# 每日总结（服务器日更 refresh_daily.sh 已自动执行第 5、6 步）：
+.venv/Scripts/python -m backend.pipeline.scan_report     # 5. 事实扫描（data/reports/scan/）
+.venv/Scripts/python -m backend.pipeline.summary_render  # 6. 合成每日总结 HTML（data/reports/）
+#    两步之间可由 LLM 按 docs/summary_contract.md 写叙事 JSON
+#    （data/reports/narrative/，可缺省，缺失时模板兜底）；看板「📰 日报」入口回看历史总结
+#    判据体系见资料库《期货看板日报 · 方法论与复制指南》（v4）：农/工分流、回踩 vs 分歧裁决树
 
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种

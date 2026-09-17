@@ -167,11 +167,11 @@
 
 ---
 
-## 7. GET /api/reports（每日日报）
+## 7. GET /api/reports（每日总结）
 
-归档日报列表（按日期倒序）。日报由报告流水线生成：
-`backend.pipeline.report_facts`（结构化事实）→ OpenClaw 叙事（可选）→
-`backend.pipeline.report_render`（合成），产物在 `data/reports/` 下。
+归档每日总结列表（按日期倒序）。由报告流水线生成：
+`backend.pipeline.scan_report`（事实扫描）→ LLM 叙事（可选）→
+`backend.pipeline.summary_render`（合成 HTML），产物在 `data/reports/` 下。
 
 **响应**：数组，每项：
 

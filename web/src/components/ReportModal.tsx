@@ -9,7 +9,7 @@ interface Props {
 
 /**
  * 每日日报弹窗：左侧归档列表，右侧 iframe 渲染日报 HTML
- * （HTML 由 backend.pipeline.report_render 生成，/api/reports/{date}/html 提供）。
+ * （HTML 由 backend.pipeline.summary_render 生成，/api/reports/{date}/html 提供）。
  */
 export default function ReportModal({ open, onClose }: Props) {
   const [reports, setReports] = useState<ReportMeta[]>([])

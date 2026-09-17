@@ -1,0 +1,656 @@
+# -*- coding: utf-8 -*-
+"""期货看板每日总结 · HTML 渲染器（报告流水线第 2 步）。
+
+读取 scan_report 产出的扫描 JSON（data/reports/scan/scan_YYYY-MM-DD.json），
+叠加可选叙事 JSON（data/reports/narrative/narrative_YYYY-MM-DD.json，由 LLM 按
+docs/summary_contract.md 撰写；缺字段时以规则化模板兜底），渲染单文件 HTML：
+
+    data/reports/daily_summary_YYYY-MM-DD.html
+
+版式与配色对齐资料库成品《期货看板每日总结》（9 节结构 + 浅色卡片）。
+
+用法：
+    python -m backend.pipeline.summary_render
+    python -m backend.pipeline.summary_render --date 2026-09-15
+"""
+import argparse
+import html
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from backend.core.config import DATA_DIR
+
+REPORTS_DIR = DATA_DIR / "reports"
+SCAN_DIR = REPORTS_DIR / "scan"
+NARRATIVE_DIR = REPORTS_DIR / "narrative"
+
+DASHBOARD_URL = "http://110.42.220.207:8000/"
+
+WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _esc(s) -> str:
+    return html.escape("" if s is None else str(s))
+
+
+def _n(v, nd=2):
+    if v is None:
+        return "—"
+    return f"{v:.{nd}f}"
+
+
+def _md(date_str) -> str:
+    s = str(date_str or "")
+    return s[5:10] if len(s) >= 10 else s
+
+
+def _wd(date_str) -> str:
+    try:
+        return WEEKDAY_CN[datetime.strptime(str(date_str)[:10], "%Y-%m-%d").weekday()]
+    except Exception:
+        return ""
+
+
+def _next_weekday(d):
+    nxt = d + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return nxt
+
+
+def _sign(chg):
+    return f"{chg:+d}" if isinstance(chg, int) and not isinstance(chg, bool) else "NEW"
+
+
+def _name(r, maxn=0):
+    """渲染一个品种：名称 + 代码"""
+    items = [f"{r.get('name') or ''} {r.get('code') or r.get('key') or ''}".strip()]
+    return items[0]
+
+
+def _names(rows, maxn=0) -> str:
+    items = [_name(r) for r in rows]
+    if maxn and len(items) > maxn:
+        return "、".join(items[:maxn]) + f" 等 {len(items)} 只"
+    return "、".join(items)
+
+
+# ---------------------------------------------------------------- 兜底叙事
+def fallback_tone(f):
+    """从两口径计数变化给当日定性"""
+    o, p = f['overview']['1d'], f['overview'].get('prev_1d')
+    o4 = f['overview']['4h']
+    d_long = o['long_trend'] - (p or {}).get('long_trend', o['long_trend'])
+    d_short = o['short_trend'] - (p or {}).get('short_trend', o['short_trend'])
+    acts = f.get('new_signals', {}).get('1d', [])
+    n_bk = sum(1 for x in acts if x.get('signal') == 'BK')
+    n_sk = sum(1 for x in acts if x.get('signal') == 'SK')
+    n_sp = sum(1 for x in acts if x.get('signal') == 'SP')
+    if d_long >= 2 and n_bk:
+        return "多头反攻日"
+    if n_sp >= 3 and not n_sk:
+        return "多头撤退日"
+    if d_short >= 3 and n_sk:
+        return "空头扩散日"
+    if d_short >= 2:
+        return "空头增强日"
+    if d_long >= 2:
+        return "多头增强日"
+    return "多空均衡日"
+
+
+def fallback_one_liner(f, tone):
+    dd = _md(f['data_date'])
+    o, p = f['overview']['1d'], f['overview'].get('prev_1d') or {}
+    o4 = f['overview']['4h']
+    acts = f.get('new_signals', {}).get('1d', [])
+    seg = []
+    for sig, verb in (('BK', '新开多'), ('SK', '新开空'), ('SP', '平多离场'), ('BP', '平空离场')):
+        rows = [x for x in acts if x.get('signal') == sig]
+        if rows:
+            seg.append(f"{len(rows)} 只{verb}（{_names(rows, 6)}）")
+    head = f"{dd} 是{tone}"
+    if seg:
+        head += " —— 日线 " + "、".join(seg)
+    return (head + f"。日线多空 {o['long_trend']} : {o['short_trend']}"
+            f"（前 {(p or {}).get('long_trend', '—')} : {(p or {}).get('short_trend', '—')}），"
+            f"4h 多空 {o4['long_trend']} : {o4['short_trend']}。")
+
+
+def fallback_cautions(f):
+    """规则生成的「别误读」提示：只在数据支持时输出。
+
+    返回 [{'title','body'}]，两者均为纯文本 —— 渲染层负责拼装 HTML 并转义，
+    避免规则串里夹标签被二次转义（历史版本就栽在这里）。
+    """
+    out = []
+    o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
+    n_sl, p_sl = o4.get('short_to_long', 0), p4.get('short_to_long')
+    if p_sl is not None and n_sl > p_sl:
+        real = f['turn']['B']
+        out.append({
+            'title': f"别误读「4h 空转多 {p_sl}→{n_sl}」",
+            'body': (f"其中真正回到 4h 多头桶（= 重新 BK）的只有 {len(real)} 只"
+                     + (f"（{_names(real, 6)}）" if real else "")
+                     + "，其余仅是蓝转红候选，不构成翻多。"),
+        })
+    red = [x for x in f['divergence']['items'] if x.get('level') == '🔴']
+    if red:
+        out.append({
+            'title': f"分歧名单 {len(red)} 只已到 🔴 级（{_names(red, 8)}）",
+            'body': "多单不持有 / 先撤；修复信号 = 4h 重新 BK。",
+        })
+    return out
+
+
+def fallback_tips(f):
+    tips = []
+    for x in f['divergence']['items']:
+        if x.get('level') == '🔴':
+            tips.append(f"{_name(x)}：{'＋'.join(x.get('why') or ['分歧'])} → 多单不持有 / 先撤。")
+        elif x.get('level') == '🟠':
+            tips.append(f"{_name(x)}：{'＋'.join(x.get('why') or ['分歧'])} → 多单减半，破 EE {_n(x.get('EE'))} 走。")
+        elif x.get('verdict') == '多头抵抗':
+            tips.append(f"{_name(x)}（农产品）：4 条全中 → 多头抵抗，不砍可低吸；日线破 EE {_n(x.get('EE'))} 才算失败。")
+    for x in f['turn']['A'][:3]:
+        if x.get('verdict') == '共振空':
+            tips.append(f"{_name(x)}：4h + 日线双级共振空 → 可跟空。")
+        elif x.get('verdict') == '日线仍多':
+            tips.append(f"{_name(x)}：4h 转空但日线仍多 = 回踩，盯日线 EE {_n(x.get('EE_1d'))}，不做空。")
+    for x in f['bear_pressure'][:2]:
+        tips.append(f"{_name(x)}：熊头遇压，反弹进 {_n(x.get('KK'))}–{_n(x.get('PP'))} 压力带可加空。")
+    for x in f['key_levels'][:2]:
+        if x['label'] == '多头距EE':
+            tips.append(f"{x['name']} {x['code']}：距日线 EE 仅 {x['gap_pct']:+.2f}%，多单警戒线。")
+    return tips[:9]
+
+
+# ---------------------------------------------------------------- 组件
+def _chg_chip(label, cur, prev):
+    if prev is None:
+        return f'<span class="chip">{label} <b class="cnum">{cur}</b></span>'
+    cls = "green" if cur > prev else ("red" if cur < prev else "")
+    return (f'<span class="chip {cls}">{label} <b class="cnum">{prev}</b> '
+            f'<span class="arrow">→</span> <b class="cnum">{cur}</b></span>')
+
+
+def _table(headers, rows):
+    head = "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
+    return f'<div class="tbwrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def _section(n, title, body, note=None):
+    note_html = f'<div class="note">{_esc(note)}</div>' if note else ""
+    return f'<div class="card"><h2><span class="n">{n}</span>{title}</h2>{note_html}{body}</div>'
+
+
+def _grp(rows, by_sector=True):
+    if not rows:
+        return "—"
+    if not by_sector:
+        return "、".join(_name(r) for r in rows)
+    g = {}
+    for r in rows:
+        g.setdefault(r.get('sector') or '其他', []).append(r)
+    return "；".join(f"{s}（{'、'.join(_name(x) for x in v)}）" for s, v in g.items())
+
+
+# ---------------------------------------------------------------- 各节
+def render_header(f, narrative, report_date):
+    dd, prev = f['data_date'], f['prev_date']
+    o, p = f['overview']['1d'], f['overview'].get('prev_1d') or {}
+    o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
+    tone = (narrative or {}).get('tone') or fallback_tone(f)
+    tone_cls = "green" if ('多' in tone and '空' not in tone.replace('多空', '')) else "amber"
+
+    chips = "".join([
+        _chg_chip('1d 多头', o['long_trend'], p.get('long_trend')),
+        _chg_chip('1d 空头', o['short_trend'], p.get('short_trend')),
+        _chg_chip('4h 多头', o4['long_trend'], p4.get('long_trend')),
+        _chg_chip('4h 空头', o4['short_trend'], p4.get('short_trend')),
+        _chg_chip('4h 多转空', o4['long_to_short'], p4.get('long_to_short')),
+    ])
+    return f"""
+<header>
+  <div class="hd-top">
+    <span class="tag">Futures Dashboard · Daily</span>
+    <span class="chip {tone_cls}">{_esc(tone)}</span>
+    <span class="chip">日线多空 <b>{o['long_trend']} : {o['short_trend']}</b></span>
+    <span class="chip">4h 多空 <b>{o4['long_trend']} : {o4['short_trend']}</b></span>
+  </div>
+  <h1>期货看板每日总结 · <em>{_esc(_md(report_date))} 作战地图</em></h1>
+  <div class="hd-sub">
+    <span>数据基准：<b>{_esc(dd)}（{_esc(_wd(dd))}）收盘</b>（1d {_esc(f['generated_at']['1d'][11:16])} / 4h {_esc(f['generated_at']['4h'][11:16])} 生成）</span>
+    <span>对比基准：<b>{_esc(_md(prev))}</b>（1d {p.get('long_trend', '—')} 多 / {p.get('short_trend', '—')} 空；4h {p4.get('long_trend', '—')} 多 / {p4.get('short_trend', '—')} 空）</span>
+    <span>看板：<b>{_esc(DASHBOARD_URL.replace('http://', '').rstrip('/'))}</b></span>
+  </div>
+  <div class="hd-sub" style="margin-top:10px">{chips}</div>
+</header>"""
+
+
+def render_oneline(f, narrative):
+    tone = (narrative or {}).get('tone') or fallback_tone(f)
+    one = (narrative or {}).get('one_liner') or fallback_one_liner(f, tone)
+    return f'<div class="oneline"><b>一句话：{_esc(one)}</b></div>'
+
+
+def render_cautions(f, narrative):
+    items = (narrative or {}).get('cautions')
+    if not items:
+        items = fallback_cautions(f)
+    wrap = ('<div class="oneline" style="border-left-color:var(--amber);'
+            'background:linear-gradient(135deg,#fffaf0,#fff);border-color:#fce3b4">')
+    out = []
+    for t in items:
+        if isinstance(t, dict):
+            title, body = t.get('title', ''), t.get('body', '')
+            inner = (f'⚠️ <b style="color:var(--amber)">{_esc(title)}</b>：{_esc(body)}'
+                     if title else _esc(body))
+        else:
+            inner = _esc(t)
+        out.append(wrap + inner + '</div>')
+    return "".join(out)
+
+
+def s1_overview(f, notes):
+    o, p = f['overview']['1d'], f['overview'].get('prev_1d') or {}
+    o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
+    rows = [
+        ('日线多头', o['long_trend'], p.get('long_trend')),
+        ('日线空头', o['short_trend'], p.get('short_trend')),
+        ('日线多转空', o['long_to_short'], p.get('long_to_short')),
+        ('日线多转空预警', o['long_to_short_warning'], p.get('long_to_short_warning')),
+        ('日线空转多', o['short_to_long'], p.get('short_to_long')),
+        ('日线回踩', o['long_support_warning'], p.get('long_support_warning')),
+        ('日线遇压', o['short_pressure_warning'], p.get('short_pressure_warning')),
+    ]
+    left = "".join(
+        f'<div class="ovrow"><span>{_esc(t)}</span><span>{cur}'
+        + (f' <span class="mut">（前 {pv}）</span>' if pv is not None and pv != cur else '')
+        + '</span></div>' for t, cur, pv in rows)
+    rows4 = [
+        ('4h 多头', o4['long_trend'], p4.get('long_trend')),
+        ('4h 空头', o4['short_trend'], p4.get('short_trend')),
+        ('4h 多转空', o4['long_to_short'], p4.get('long_to_short')),
+        ('4h 空转多', o4['short_to_long'], p4.get('short_to_long')),
+    ]
+    right = "".join(
+        f'<div class="ovrow"><span>{_esc(t)}</span><span>{cur}'
+        + (f' <span class="mut">（前 {pv}）</span>' if pv is not None and pv != cur else '')
+        + '</span></div>' for t, cur, pv in rows4)
+    acts = f.get('new_signals', {}).get('1d', [])
+    act_txt = "、".join(f"{x['code']}({x['signal']})" for x in acts) or "无"
+    body = (f'<div class="ov"><div class="ovc"><div class="ot">日线口径</div>{left}</div>'
+            f'<div class="ovc"><div class="ot">4 小时口径</div>{right}</div></div>'
+            f'<p style="margin-top:12px">当日日线新信号：<b>{_esc(act_txt)}</b></p>')
+    return _section(1, "两口径总览", body, notes.get('1'))
+
+
+def s2_leaders(f, notes):
+    L = f['leaders']
+    tiers = f['long_4h_tiers']
+    ended = [r for t in ('4h贴零', '4h微负', '4h破位') for r in tiers.get(t, [])
+             if not r.get('in_long_trend_4h')]
+    holding = [r for t in ('4h贴零', '4h微负') for r in tiers.get(t, [])
+               if r.get('in_long_trend_4h')]
+
+    def leader_rows(rows):
+        return [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                 _n(r.get('score_4h')), f"#{r.get('rank') or '—'}", _sign(r.get('rank_change'))]
+                for r in rows]
+
+    parts = []
+    if L['dual']:
+        parts.append(f"<h3>🥇 双强龙头（{len(L['dual'])} 只）—— 日线强 ＋ 4h 强，最该拿住的一批</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['dual'])))
+    if L['absolute']:
+        parts.append(f"<h3>🥇 日线绝对龙头（{len(L['absolute'])} 只）—— 日线极强，4h 只弱正</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['absolute'])))
+    if L['quasi']:
+        parts.append(f"<h3>🥈 准龙头（{len(L['quasi'])} 只）</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['quasi'])))
+    if holding:
+        parts.append(f"<h3>🟡 回踩持有多头（{len(holding)} 只）—— 日线强 ＋ 4h 仍持多 → 按回踩对待，尊重趋势</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '距 EE', '状态'],
+                              [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                                _n(r.get('score_4h')), f"{_n(r.get('gap_to_EE'))}%", '回踩']
+                               for r in holding]))
+    if ended:
+        codes = " / ".join(r['code'] for r in ended)
+        parts.append(f"<h3>⚠️ 4h 多头已结束（未重新 BK）—— {len(ended)} 只：{_esc(codes)}</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '距 EE', '状态'],
+                              [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                                _n(r.get('score_4h')), f"{_n(r.get('gap_to_EE'))}%", _esc(r['tier'])]
+                               for r in ended]))
+    if not parts:
+        parts.append("<p>当日无满足龙头门槛的品种。</p>")
+    return _section(2, "📈 趋势与龙头（权重最高 · 重点看）", "".join(parts), notes.get('2'))
+
+
+def s3_retest(f, notes):
+    rows = f['leader_retest']
+    done = [r for r in rows if r.get('pos_4h') == 1 and (r.get('score_4h') or 0) >= 1.0]
+    going = [r for r in rows if r.get('in_long_trend_4h') and r not in done]
+    alert = [r for r in rows if r not in done and r not in going
+             and isinstance(r.get('rank_change'), int) and r['rank_change'] < 0]
+    upgraded = [r for r in rows if r not in done and r not in going and r not in alert]
+
+    def t(rows_, tag):
+        if not rows_:
+            return ""
+        return (f"<h3>{tag}（{len(rows_)} 只）</h3>"
+                + _table(['品种', '代码', '日线', '4h', '收盘', 'DD', 'EE', '回踩'],
+                         [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                           _n(r.get('score_4h')), _n(r.get('close')), _n(r.get('DD')),
+                           _n(r.get('EE')), f"{r.get('retest_count') or 0} 次"]
+                          for r in rows_]))
+
+    body = (t(done, "✅ 回踩结束 / 4h 重新走强（优先低吸）")
+            + t(going, "🟡 回踩进行中（4h 仍持多、贴零/微正 → 持有观察）")
+            + t(alert, "⚠️ 回踩偏警戒（排名动量衰减）")
+            + t(upgraded, "🚨 回踩已升级（4h 转弱，日线仍多）"))
+    if not body:
+        body = f"<p>当日无龙头回踩触线品种（回踩桶 {len(rows)} 只）。</p>"
+    return _section(3, "🔁 龙头回踩（提升权重 · 优先于分歧）", body, notes.get('3'))
+
+
+def s4_divergence(f, notes):
+    items = f['divergence']['items']
+    resist = [x for x in items if x.get('verdict') == '多头抵抗']
+    red = [x for x in items if x.get('level') == '🔴']
+    orange = [x for x in items if x.get('level') == '🟠']
+    back = [x for x in items if x.get('verdict') == '回踩']
+    parts = []
+    if f['divergence']['sectors']:
+        rows = [[f"<b>{_esc(s['sector'])}</b>", _esc(s['stype']),
+                 f"{len(s['short'])} 只", "、".join(s['short']) or "—",
+                 f"{len(s['gone'])} 只", "、".join(s['gone']) or "—"]
+                for s in f['divergence']['sectors']]
+        parts.append("<h3>板块氛围（已开空 / 已离场 ≥ 2 只 = 氛围坏）</h3>"
+                     + _table(['板块', '口径', '已开空', '明细', '已离场', '明细'], rows))
+    if resist:
+        parts.append("<h3>🟡 农产品「多头抵抗」判定 —— 4 条全中才算</h3>"
+                     + _table(['品种', '代码', '日线', '4h', '收盘', 'DD', 'EE', '排名'],
+                              [[f"<b>{_esc(x['name'])}</b>", _esc(x['code']), _n(x['score']),
+                                _n(x.get('score_4h')), _n(x.get('close')), _n(x.get('DD')),
+                                _n(x.get('EE')), f"#{x.get('rank') or '—'}（{_sign(x.get('rank_change'))}）"]
+                               for x in resist])
+                     + "<p>不砍、可低吸；日线收盘破 EE = 抵抗失败才谈离场；4h 重新 BK = 抵抗成功。</p>")
+    if red or orange:
+        rows = [[x.get('level', ''), f"<b>{_esc(x['name'])}</b>", _esc(x['code']),
+                 _esc(x.get('sector_name') or x.get('sector')), _n(x['score']), _n(x.get('score_4h')),
+                 _esc("；".join(x.get('why') or [])) or "—"]
+                for x in red + orange]
+        parts.append(f"<h3>🔴 分歧名单（工业品 · {len(red) + len(orange)} 条）</h3>"
+                     + _table(['评级', '品种', '代码', '板块', '日线', '4h', '依据'], rows)
+                     + "<p>🔴 多单不持有 / 先撤；🟠 多单减半，破 EE 走；修复信号 = 4h 重新 BK。</p>")
+    if back:
+        parts.append(f"<h3>✅ 4h 未明显偏弱 → 按【回踩】处理（{len(back)} 只）</h3>"
+                     f"<p>{_esc(_names(back, 20))}</p>")
+    if not parts:
+        parts.append("<p>当日无板块级分歧。</p>")
+    return _section(4, "⭐ 分歧严重 · 特别关注名单（简化版）", "".join(parts), notes.get('4'))
+
+
+def s5_short(f, notes):
+    rows = [r for sec in f['short_positions'].values() for r in sec]
+    rows.sort(key=lambda x: _sc(x))
+    body = _table(['品种', '代码', '板块', '日线', '收盘', 'KK', 'PP', '触压'],
+                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _esc(r.get('sector')),
+                    _n(r['score']), _n(r.get('close')), _n(r.get('KK')), _n(r.get('PP')),
+                    f"{r.get('retest_count') or 0} 次"] for r in rows])
+    return _section(5, f"看空主线（日线空头 {len(rows)} 只）", body, notes.get('5'))
+
+
+def s6_turn(f, notes):
+    A = f['turn']['A']
+    MARK = {'共振空': ('🔴', '可跟空（4h + 日线双级共振）'),
+            '已离场': ('⬜', '趋势偏空，等日线 SK 才做空'),
+            '日线仍多': ('🟨', '按回踩处理，不做空')}
+    parts = []
+    if A:
+        rows = [[MARK.get(x['verdict'], ('⚪', ''))[0], f"<b>{_esc(x['name'])}</b>", _esc(x['code']),
+                 _n(x['score']), _esc(_md(x.get('signal_date'))), _n(x.get('score_1d')),
+                 _n(x.get('EE_1d')), _esc(MARK.get(x['verdict'], ('', '—'))[1])]
+                for x in A]
+        parts.append("<h3>A. 4h 多转空 → 日线裁决</h3>"
+                     + _table(['', '品种', '代码', '4h', '信号日', '日线', '日线 EE', '动作'], rows))
+    B = f['turn']['B']
+    if B:
+        rows = [[f"<b>{_esc(x['name'])}</b>", _esc(x['code']), _n(x['score']),
+                 _esc(_md(x.get('signal_date'))), _esc(x.get('pos_1d'))] for x in B]
+        parts.append("<h3>C. 反向信号（4h 空转多 —— 多为假转折，需日线确认）</h3>"
+                     + _table(['品种', '代码', '4h', '信号日', '日线 POS'], rows))
+    for nm, arr in f['turn']['warnings'].items():
+        if arr:
+            parts.append(f"<p>{_esc(nm)}：{_esc(_names(arr, 20))}</p>")
+    if not parts:
+        parts.append("<p>当日无 4h 转折信号。</p>")
+    return _section(6, "阶段性转折（简化版 · 只留两条主线 + 一个反向段）",
+                    "".join(parts), notes.get('6'))
+
+
+def s7_pressure(f, notes):
+    rows = f['bear_pressure']
+    if not rows:
+        return _section(7, "熊头遇压（重点 👀）", "<p>当日无熊头触压品种。</p>", notes.get('7'))
+    body = _table(['品种', '代码', '日线', '4h', '收盘', 'KK', 'PP', '触压', '距 KK'],
+                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                    _n(r.get('score_4h')), _n(r.get('close')), _n(r.get('KK')),
+                    _n(r.get('PP')), f"{r.get('retest_count') or 0} 次",
+                    f"{_n(_gap(r.get('close'), r.get('KK')))}%"] for r in rows])
+    return _section(7, f"熊头遇压（重点 👀 · {len(rows)} 只）", body, notes.get('7'))
+
+
+def s8_tips(f, narrative):
+    tips = (narrative or {}).get('action_tips') or fallback_tips(f)
+    lis = "".join(f"<li>{_esc(t)}</li>" for t in tips)
+    return _section(8, f"{_esc(_md(next_report_date(f)))} 操作提示（最简版）",
+                    f'<ol class="oplist">{lis}</ol>')
+
+
+def s9_radar(f, notes):
+    parts = []
+    for side, lab, mark in (('long_trend', '多头榜', '🚀'), ('short_trend', '空头榜', '🆙')):
+        rows = f['rank_radar'].get(side, [])
+        risen = [r for r in rows if r.get('risen')]
+        fallen = [r for r in rows if r.get('fallen')]
+        new = [r for r in rows if r.get('rank_status') == 'new']
+        for sub, data in ((f"{mark} 新贵（排名显著上升）", risen),
+                          ("📉 掉队（排名显著下滑）", fallen),
+                          ("🆕 新入榜", new)):
+            if not data:
+                continue
+            parts.append(f"<h3>{lab} · {sub}（{len(data)} 只）</h3>"
+                         + _table(['品种', '代码', '日线', '排名', '变化', '7 日轨迹'],
+                                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
+                                    f"#{r.get('rank') or '—'}", _sign(r.get('rank_change')),
+                                    _esc(" ".join(str(x.get('rank')) if x.get('rank') is not None else '-'
+                                                  for x in (r.get('rank_history') or [])[-7:]))]
+                                   for r in data]))
+    if not parts:
+        parts.append("<p>当日无显著排名变动（|变化| ≥ 3 视为显著）。</p>")
+    return _section(9, "动量排名雷达 · 新贵与掉队（补充信号 👀）", "".join(parts), notes.get('9'))
+
+
+def _sc(r):
+    return (r or {}).get('score') or 0
+
+
+def _gap(close, ref):
+    return (close - ref) / ref * 100 if (close and ref) else None
+
+
+def next_report_date(f):
+    d = datetime.strptime(f['data_date'][:10], "%Y-%m-%d").date()
+    return _next_weekday(d).isoformat()
+
+
+# ---------------------------------------------------------------- 样式（对齐资料库成品）
+CSS = """
+  :root{
+    --bg:#f4f6f9; --card:#ffffff; --line:#e6e9ef;
+    --ink:#1c2430; --ink2:#5b6675; --ink3:#8a94a3;
+    --red:#d92d20; --red-d:#b42318; --red-bg:#fef2f1;
+    --green:#16855a; --green-bg:#edfdf4;
+    --amber:#b45309; --amber-bg:#fffaf0;
+    --blue:#1d4ed8; --blue-bg:#eff5ff;
+    --navy:#25456f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.65;font-size:15px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1060px;margin:0 auto;padding:18px 16px 60px}
+
+  header{background:linear-gradient(135deg,#22406a 0%,#2c5386 55%,#37649e 100%);color:#fff;border-radius:16px;padding:26px 28px 22px;position:relative;overflow:hidden}
+  header::after{content:"";position:absolute;right:-70px;top:-70px;width:250px;height:250px;border-radius:50%;background:radial-gradient(circle,rgba(217,45,32,.22),transparent 70%)}
+  header::before{content:"";position:absolute;right:80px;bottom:-100px;width:230px;height:230px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.07),transparent 70%)}
+  .hd-top{display:flex;flex-wrap:wrap;gap:10px;align-items:center;position:relative;z-index:1}
+  .tag{font-size:11.5px;letter-spacing:.12em;color:#a9c0dd;text-transform:uppercase}
+  h1{font-size:25px;font-weight:800;margin:4px 0 2px;letter-spacing:.4px}
+  h1 em{font-style:normal;color:#ffa79c}
+  .hd-sub{font-size:13px;color:#cddbec;display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px;position:relative;z-index:1}
+  .hd-sub b{color:#fff}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:3px 11px;font-size:12.5px;color:#eef4fb;white-space:nowrap}
+  .chip.red{background:rgba(217,45,32,.3);border-color:rgba(255,140,130,.45)}
+  .chip.green{background:rgba(22,133,90,.34);border-color:rgba(120,231,183,.45)}
+  .chip.amber{background:rgba(245,158,11,.24);border-color:rgba(255,205,100,.5)}
+  .chip b{color:#fff}
+  .cnum{font-weight:800;font-size:14px}
+  .chip .arrow{color:#ffb3a8;font-weight:700}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-top:16px;box-shadow:0 1px 3px rgba(28,36,48,.05)}
+  h2{font-size:19px;font-weight:800;color:var(--navy);margin-bottom:14px;padding-bottom:9px;border-bottom:2px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  h2 .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--navy);color:#fff;font-size:14px;font-weight:800;flex:0 0 auto}
+  h3{font-size:15.5px;font-weight:800;margin:18px 0 9px;color:var(--ink);display:flex;align-items:center;gap:7px}
+  h3:first-of-type{margin-top:4px}
+  p{font-size:14.5px;color:var(--ink2);margin-bottom:9px}
+  p b,li b{color:var(--ink)}
+  ul{margin:0 0 10px 20px}
+  li{font-size:14.3px;color:var(--ink2);margin-bottom:5px}
+  .hl{color:var(--red-d);font-weight:800}
+  .hlg{color:var(--green);font-weight:800}
+  .hla{color:var(--amber);font-weight:800}
+
+  .tbwrap{overflow-x:auto;margin:10px 0 4px;-webkit-overflow-scrolling:touch}
+  table{width:100%;border-collapse:collapse;font-size:13.4px;min-width:560px}
+  th{background:#f0f3f8;color:var(--navy);font-weight:700;text-align:left;padding:9px 10px;border-bottom:2px solid #dde3ec;white-space:nowrap;font-size:12.8px}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);color:var(--ink2);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#fafbfd}
+  td b{color:var(--ink)}
+  .up{color:var(--red);font-weight:800}
+  .dn{color:var(--green);font-weight:800}
+  .warn{color:var(--amber);font-weight:800}
+  .mut{color:var(--ink3)}
+  .nowrap{white-space:nowrap}
+
+  .bdg{display:inline-block;padding:1.5px 8px;border-radius:999px;font-size:11.8px;font-weight:800;white-space:nowrap}
+  .bdg.r{background:var(--red-bg);color:var(--red-d);border:1px solid #fbd5d1}
+  .bdg.g{background:var(--green-bg);color:var(--green);border:1px solid #c7f0dd}
+  .bdg.a{background:var(--amber-bg);color:var(--amber);border:1px solid #fce3b4}
+  .bdg.y{background:#fffbeb;color:#a16207;border:1px solid #fde68a}
+  .bdg.b{background:var(--blue-bg);color:var(--blue);border:1px solid #cddffb}
+  .bdg.n{background:#f1f3f7;color:var(--ink3);border:1px solid #e2e6ee}
+
+  .ov{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px}
+  .ovc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .ovc .ot{font-size:13px;font-weight:800;color:var(--navy);margin-bottom:9px;letter-spacing:.3px}
+  .ovrow{display:flex;justify-content:space-between;align-items:center;font-size:13.4px;padding:4px 0;border-bottom:1px dashed #eef1f6}
+  .ovrow:last-child{border-bottom:none}
+  .ovrow span:first-child{color:var(--ink3)}
+  .ovrow span:last-child{font-weight:800;color:var(--ink)}
+
+  .oneline{background:linear-gradient(135deg,#fff8f7,#fff);border:1px solid #fbd5d1;border-left:5px solid var(--red);border-radius:12px;padding:15px 18px;margin-top:14px;font-size:14.6px;color:var(--ink);line-height:1.75}
+  .oneline b{color:var(--red-d)}
+
+  .note{background:#f8fafc;border:1px dashed #d8dfe9;border-radius:10px;padding:11px 14px;font-size:13.2px;color:var(--ink2);margin:10px 0}
+  .note b{color:var(--ink)}
+
+  .oplist{counter-reset:o;list-style:none;margin:0}
+  .oplist li{counter-increment:o;position:relative;padding:9px 0 9px 38px;border-bottom:1px dashed #eef1f6;font-size:14.2px;color:var(--ink2);line-height:1.7}
+  .oplist li:last-child{border-bottom:none}
+  .oplist li::before{content:counter(o);position:absolute;left:0;top:9px;width:24px;height:24px;border-radius:7px;background:var(--navy);color:#fff;font-size:12.5px;font-weight:800;display:flex;align-items:center;justify-content:center}
+
+  footer{margin-top:22px;padding:14px 16px;background:#eef1f6;border-radius:12px;font-size:12.6px;color:var(--ink3);line-height:1.7}
+
+  @media(max-width:820px){
+    .ov{grid-template-columns:1fr}
+    h1{font-size:21px}
+    .card{padding:16px 15px}
+    header{padding:20px 18px 18px}
+  }
+"""
+
+
+def render_footer(f):
+    return (f"<footer>口径：日线定趋势、4h 定节奏、板块定氛围、排名定动能。"
+            f"4h 转折一律以日线趋势为最终裁决；日线 EE = 多头生死线；4h 重新 BK = 回踩结束信号。"
+            f"数据源：{_esc(DASHBOARD_URL)} —— 扫描生成于 {_esc(f.get('created_at'))}，"
+            f"数据基准 {_esc(f['data_date'])}，对比 {_esc(f['prev_date'])}。</footer>")
+
+
+def render_html(f, narrative) -> str:
+    report_date = next_report_date(f)
+    notes = (narrative or {}).get('section_notes') or {}
+    body = "".join([
+        render_header(f, narrative, report_date),
+        render_oneline(f, narrative),
+        render_cautions(f, narrative),
+        s1_overview(f, notes),
+        s2_leaders(f, notes),
+        s3_retest(f, notes),
+        s4_divergence(f, notes),
+        s5_short(f, notes),
+        s6_turn(f, notes),
+        s7_pressure(f, notes),
+        s8_tips(f, narrative),
+        s9_radar(f, notes),
+        render_footer(f),
+    ])
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>期货看板每日总结 · {_esc(report_date)} 作战地图</title>
+<style>{CSS}</style></head>
+<body><div class="wrap">{body}</div></body></html>"""
+
+
+def main():
+    ap = argparse.ArgumentParser(description="期货看板每日总结 · HTML 渲染器")
+    ap.add_argument("--date", help="数据日期 YYYY-MM-DD（默认取最新扫描产物）")
+    ap.add_argument("--report-date", help="报告日期 YYYY-MM-DD（默认=数据日的下一工作日）")
+    args = ap.parse_args()
+
+    if args.date:
+        scan_file = SCAN_DIR / f"scan_{args.date}.json"
+    else:
+        cands = sorted(SCAN_DIR.glob("scan_*.json"))
+        if not cands:
+            raise SystemExit("[错误] 无扫描产物，先运行 python -m backend.pipeline.scan_report")
+        scan_file = cands[-1]
+    if not scan_file.exists():
+        raise SystemExit(f"[错误] 找不到 {scan_file}")
+    with open(scan_file, encoding="utf-8") as fp:
+        f = json.load(fp)
+
+    report_date = args.report_date or next_report_date(f)
+    narrative_file = NARRATIVE_DIR / f"narrative_{report_date}.json"
+    narrative = None
+    if narrative_file.exists():
+        with open(narrative_file, encoding="utf-8") as fp:
+            narrative = json.load(fp)
+        print(f"[叙事] 采用 {narrative_file}")
+    else:
+        print(f"[叙事] 无 narrative_{report_date}.json，使用规则化模板兜底")
+
+    out = REPORTS_DIR / f"daily_summary_{report_date}.html"
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write(render_html(f, narrative))
+    print(f"[产物] {out}")
+
+
+if __name__ == "__main__":
+    main()

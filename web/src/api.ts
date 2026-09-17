@@ -30,7 +30,7 @@ export function fetchScreening(timeframe: Timeframe): Promise<ScreeningReport> {
     .then((report) => assertRequestedTimeframe(report, timeframe))
 }
 
-/** 归档日报列表（由 backend.pipeline.report_facts/report_render 生成）。 */
+/** 归档日报列表（由 backend.pipeline.scan_report/summary_render 生成）。 */
 export function fetchReports(): Promise<ReportMeta[]> {
   return getJson<ReportMeta[]>('/api/reports')
 }
