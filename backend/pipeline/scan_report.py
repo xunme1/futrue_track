@@ -4,11 +4,11 @@
 判据口径来源：资料库《期货看板日报 · 方法论与复制指南》（v4 判据体系），
 移植自 daily_scan.py，数据源改为读取本地流水线产物，不再依赖 HTTP 看板服务。
 
-与 daily_scan.py 的差异（仅数据层与输出层，判据完全一致）：
+与 daily_scan.py 的差异（缺失与时效性校验优先于判据）：
 - 数据源：/api/screening[?timeframe=4h] → data/{,4h/}screening/latest.json
           /api/symbols[?timeframe=4h]   → data/{,4h/}json/*.json（POS / last_signal）
           前日归档 screen_{tf}_{YYYYMMDD}.json → data/reports/snapshots/
-- 日期：TODAY / PREV 由 CLI 传入（默认取 screening 的 generated_at 日期）
+- 日期：TODAY / PREV 由 CLI 传入（默认取筛选行情日期）
 - 输出：12 段文本（人类可读，调试用）+ 一份结构化 JSON（供渲染器消费），二者同源
 
 用法：
@@ -17,14 +17,13 @@
     python -m backend.pipeline.scan_report --text-only
 """
 import argparse
-import io
 import json
-import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from backend.core.config import DATA_DIR
+from backend.core.config import DATA_DIR, load_contracts
+from backend.pipeline.report_store import RULES_VERSION, iso_day, digest, atomic_json, atomic_text
 from backend.core.timeframes import TIMEFRAMES, json_dir, screening_file
 
 # ---------------------------------------------------------------- 判据常量
@@ -74,7 +73,8 @@ def _gap_pct(close, ref):
 
 def base_of(key: str) -> str:
     """合约码 → 品种码。保留原始大小写（FG601→FG，rb2610→rb），与板块字典匹配。"""
-    return ''.join(ch for ch in key if ch.isalpha())
+    code = str(key).split('.')[0]
+    return code if code.isdigit() else ''.join(ch for ch in code if ch.isalpha())
 
 
 def sector_of(key: str) -> str:
@@ -96,9 +96,7 @@ def _load(path: Path):
 
 
 def _dump(path: Path, payload) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=1)
+    atomic_json(path, payload)
 
 
 def load_screening(tf: str) -> dict:
@@ -107,23 +105,61 @@ def load_screening(tf: str) -> dict:
 
 
 def load_symbols(tf: str):
-    """等价 /api/symbols[?timeframe=4h]：key / pos / last_signal"""
+    """权威状态及当前行情；保留最近两次交易信号以复核重新开多。"""
     out = []
     for fp in sorted(json_dir(tf).glob("*.json")):
         d = _load(fp)
-        sigs = d.get("signals") or []
         dates = d.get("dates") or []
-        last_sig = None
-        if sigs:
-            s = sigs[-1]
-            i = s["i"]
-            last_sig = {"type": s["type"], "date": dates[i] if 0 <= i < len(dates) else None}
-        out.append({
-            "key": fp.stem,
-            "pos": (d.get("POS") or [0])[-1],
-            "last_signal": last_sig,
-        })
+        signals = [{"type": v["type"], "date": dates[v["i"]]}
+                   for v in sorted(d.get("signals") or [], key=lambda v: v["i"])
+                   if 0 <= v["i"] < len(dates)]
+        row = {"key": fp.stem, "name": d.get("name", ""),
+               "last_date": dates[-1] if dates else None,
+               "pos": (d.get("POS") or [None])[-1],
+               "last_signal": signals[-1] if signals else None, "recent_signals": signals[-2:],
+               "close": d["ohlc"][-1][1] if d.get("ohlc") else None}
+        row.update({field: (d.get(field) or [None])[-1] for field in ("score", "DD", "EE", "KK", "PP")})
+        out.append(row)
     return out
+
+
+def market_day(screen):
+    """优先使用明确交易日；老筛选文件从最新行情行日期恢复。"""
+    explicit = iso_day(screen.get('data_date')) or iso_day((screen.get('trend_ranking') or {}).get('as_of'))
+    days = {iso_day(r.get('date')) for rows in screen.get('buckets', {}).values() for r in rows}
+    days.discard(None)
+    if explicit:
+        if days and max(days) > explicit:
+            raise ValueError('筛选行情日期晚于声明的数据日')
+        return explicit
+    if days:
+        return max(days)
+    raise ValueError('筛选缺少可核验的行情日期；不能使用 generated_at 替代')
+
+
+def prepare_inputs(scr, sym):
+    """固定当前观察池，过期标的保留未知状态，不让旧价位参与新日判断。"""
+    contracts = {str(c.get('key') or c['symbol']).split('.')[0]: c for c in load_contracts()}
+    notes, days = [], {tf: market_day(scr[tf]) for tf in TIMEFRAMES}
+    if len(set(days.values())) != 1:
+        raise ValueError(f"两周期行情日不同步：{days}；补齐数据后再生成日报")
+    for tf in TIMEFRAMES:
+        bykey = {r['key']: r for r in sym[tf]}
+        valid = []
+        for key, contract in contracts.items():
+            row = dict(bykey.get(key) or {}, key=key, name=contract.get('name', key))
+            if iso_day(row.get('last_date')) != days[tf]:
+                notes.append(f"{tf} {key}: 当日行情缺失，状态与价位按未知处理")
+                row = dict(key=key, name=row['name'], pos=None, last_signal=None)
+            valid.append(row)
+        sym[tf] = valid
+        fresh = {r['key'] for r in valid if iso_day(r.get('last_date')) == days[tf]}
+        for bucket in BUCKETS:
+            if bucket not in scr[tf].get('buckets', {}):
+                raise ValueError(f'{tf} 缺少筛选桶 {bucket}')
+            scr[tf]['buckets'][bucket] = [r for r in scr[tf]['buckets'][bucket]
+                if r['key'] in fresh and iso_day(r.get('date')) == days[tf]]
+    return days['1d'], notes
 
 
 def load_prev_screening(tf: str, prev_date: str):
@@ -159,15 +195,20 @@ def build_rows(scr: dict, sym):
                                 'buckets': [], '_by_bucket': {}})
         r['pos'] = x.get('pos')
         r['last'] = x.get('last_signal') or {}
+        r['recent_signals'] = x.get('recent_signals') or []
+        r['last_date'] = x.get('last_date')
+        if x.get('name'):
+            r['name'] = x['name']
+        for field in ('close', 'score', 'DD', 'EE', 'KK', 'PP'):
+            if x.get(field) is not None and (field != 'score' or r.get('score') is None):
+                r[field] = x[field]
     return rows
 
 
 def prod_view(rows):
-    """品种级视图：同品种多合约取 |score| 最大者；无行情（close=None）一律剔除。"""
+    """品种级视图：保留桶外及未知状态；观察池已在输入层过滤。"""
     out = {}
     for k, r in rows.items():
-        if r.get('close') is None:
-            continue
         b = base_of(k)
         if b not in out or abs(_sc(r)) > abs(_sc(out[b])):
             out[b] = r
@@ -176,6 +217,8 @@ def prod_view(rows):
 
 def repr_of(rows, key):
     """按品种取某口径的代表合约（|score| 最大者）"""
+    if key in rows:
+        return rows[key]
     best = None
     for r in rows.values():
         if base_of(r['key']) != base_of(key):
@@ -191,10 +234,10 @@ def sector_mood(P1, sector):
     for b in SECTORS.get(sector, []):
         r = P1.get(b)
         if r is None:
-            gone_.append(b)                      # 不在日线任何桶
+            continue                             # 未覆盖不是已离场
         elif r.get('pos') == -1:
             short_.append(b)
-        elif 'long_trend' not in (r.get('buckets') or []):
+        elif r.get('pos') == 0:
             gone_.append(b)                      # 已平多未开空
     return short_, gone_
 
@@ -218,13 +261,16 @@ def scan(data_date=None, prev_date=None):
     scr = {tf: load_screening(tf) for tf in TIMEFRAMES}
     sym = {tf: load_symbols(tf) for tf in TIMEFRAMES}
 
+    # 读取一次并携带该批输入直到归档，防止计算和保存时混入另一次更新。
+    raw_scr = json.loads(json.dumps(scr))
+    actual_day, quality_notes = prepare_inputs(scr, sym)
+    if data_date and data_date != actual_day:
+        raise ValueError(f'指定数据日 {data_date} 与实际行情日 {actual_day} 不符')
+    data_date = actual_day
     gen = {tf: scr[tf].get('generated_at', '') for tf in TIMEFRAMES}
-    if not data_date:
-        data_date = gen['1d'][:10]
-    if not data_date:
-        raise SystemExit("[错误] 1d screening 缺少 generated_at，请用 --data-date 指定")
-    if not prev_date:
-        prev_date = infer_prev_date(data_date)
+    prev_date = prev_date or infer_prev_date(data_date)
+    if not iso_day(prev_date) or prev_date >= data_date:
+        raise ValueError('历史基线日期必须严格早于当前行情日')
 
     R = {tf: build_rows(scr[tf], sym[tf]) for tf in TIMEFRAMES}
     P = {tf: prod_view(R[tf]) for tf in TIMEFRAMES}
@@ -235,7 +281,8 @@ def scan(data_date=None, prev_date=None):
              if x.get('close') is not None}
 
     facts = {
-        'scan_version': 1,
+        'scan_version': 2, 'rules_version': RULES_VERSION,
+        'quality_notes': quality_notes,
         'created_at': datetime.now().isoformat(timespec='seconds'),
         'data_date': data_date,
         'prev_date': prev_date,
@@ -246,8 +293,8 @@ def scan(data_date=None, prev_date=None):
 
     # 【一】总览
     facts['overview'] = {
-        '1d': scr['1d'].get('summary') or _summarize(scr['1d']),
-        '4h': scr['4h'].get('summary') or _summarize(scr['4h']),
+        '1d': current_counts(scr['1d'], P['1d']),
+        '4h': current_counts(scr['4h'], P['4h']),
         'prev_1d': (prev['1d'] or {}).get('summary') if prev['1d'] else None,
         'prev_4h': (prev['4h'] or {}).get('summary') if prev['4h'] else None,
     }
@@ -269,19 +316,19 @@ def scan(data_date=None, prev_date=None):
     facts['divergence'] = _divergence(P['1d'], R['4h'], WARN1)
 
     # 【七】阶段性转折
-    facts['turn'] = _turn(scr['1d'], scr['4h'], P['1d'])
+    facts['turn'] = _turn(scr['1d'], scr['4h'], P['1d'], R['4h'])
 
     # 【八】龙头回踩 / 【九】熊头遇压
     facts['leader_retest'] = _attach_4h(
         [_row_bucket(it) for it in
          sorted(scr['1d']['buckets'].get('long_support_warning', []),
                 key=lambda x: -(x.get('score') or 0))
-         if it.get('close') is not None], R['4h'])
+         if it.get('close') is not None], R['4h'], prev_date)
     facts['bear_pressure'] = _attach_4h(
         [_row_bucket(it) for it in
          sorted(scr['1d']['buckets'].get('short_pressure_warning', []),
                 key=lambda x: (x.get('score') or 0))
-         if it.get('close') is not None], R['4h'])
+         if it.get('close') is not None], R['4h'], prev_date)
 
     # 【十】排名雷达
     facts['rank_radar'] = _rank_radar(scr['1d'])
@@ -290,14 +337,42 @@ def scan(data_date=None, prev_date=None):
     facts['new_signals'] = {
         tf: [{'key': x['key'], 'code': base_of(x['key']), 'pos': x.get('pos'),
               'signal': (x.get('last_signal') or {}).get('type')}
-             for x in sym[tf] if (x.get('last_signal') or {}).get('date') == data_date]
+             for x in sym[tf] if (x.get('last_signal') or {}).get('date') and iso_day((x.get('last_signal') or {}).get('date')) == data_date and x.get('pos') is not None]
         for tf in TIMEFRAMES
     }
 
     # 【十二】关键位紧贴度
     facts['key_levels'] = _key_levels(P['1d'])
 
+    facts['coverage'] = {tf: {'known': sum(r.get('pos') in (-1, 0, 1) for r in P[tf].values()),
+                              'unknown': sum(r.get('pos') not in (-1, 0, 1) for r in P[tf].values())} for tf in TIMEFRAMES}
+    for tf in TIMEFRAMES:
+        missing = [r['key'] for r in P[tf].values() if r.get('pos') is not None and r.get('score') is None]
+        facts['coverage'][tf]['missing_score'] = len(missing)
+        if missing:
+            quality_notes.append(f"{tf}: {len(missing)} 个合约缺少可用动量评分，不参与强弱/分歧判断：" + '、'.join(missing))
+    facts['input_hash'] = digest({'rules': RULES_VERSION, 'screen': raw_scr, 'symbols': sym,
+                                  'previous': prev, 'data_date': data_date, 'prev_date': prev_date})
+    facts['input_snapshot'] = {'screen': scr, 'symbols': sym}
     return facts
+
+
+def current_counts(screen, products):
+    counts = _summarize(screen)
+    counts['long_trend'] = sum(r.get('pos') == 1 for r in products.values())
+    counts['short_trend'] = sum(r.get('pos') == -1 for r in products.values())
+    return counts
+
+
+def archive_scan(facts):
+    day = facts['data_date'].replace('-', '')
+    text = render_text(facts)  # 所有渲染校验先完成，再发布快照与扫描产物。
+    for tf in TIMEFRAMES:
+        screen = dict(facts['input_snapshot']['screen'][tf], summary=facts['overview'][tf])
+        _dump(SNAPSHOT_DIR / f'screen_{tf}_{day}.json', screen)
+        _dump(SNAPSHOT_DIR / f'symbols_{tf}_{day}.json', facts['input_snapshot']['symbols'][tf])
+    _dump(SCAN_DIR / f"scan_{facts['data_date']}.json", facts)
+    atomic_text(SCAN_DIR / f"scan_{facts['data_date']}.txt", text)
 
 
 def _summarize(scr):
@@ -333,7 +408,9 @@ def _leaders(P1, R4):
     for b, r in P1.items():
         if r.get('pos') != 1:
             continue
-        r4 = repr_of(R4, b)
+        r4 = repr_of(R4, r['key'])
+        if r.get('score') is None or r4.get('score') is None or r4.get('pos') != 1:
+            continue
         s1, s4 = _sc(r), _sc(r4)
         if s1 >= LEAD_1D and s4 >= LEAD_4H:
             dual.append((b, r, r4))
@@ -359,12 +436,15 @@ def _leader_row(b, r, r4):
 
 def _long_4h_tiers(P1, R4):
     """【五】日线多头（score≥QUASI_1D）× 4h 状态分档"""
-    tiers = {'4h强势': [], '4h贴零': [], '4h微负': [], '4h破位': []}
+    tiers = {'4h强势': [], '4h贴零': [], '4h微负': [], '4h破位': [], '4h未知': []}
     for b, r in sorted(P1.items(), key=lambda x: -_sc(x[1])):
         if r.get('pos') != 1 or _sc(r) < QUASI_1D:
             continue
-        s4 = _sc(repr_of(R4, b))
-        if s4 >= LEAD_4H:
+        r4 = repr_of(R4, r['key'])
+        s4 = r4.get('score')
+        if s4 is None or r4.get('pos') is None:
+            tag = '4h未知'
+        elif s4 >= LEAD_4H:
             tag = '4h强势'
         elif s4 >= 0:
             tag = '4h贴零'
@@ -372,10 +452,9 @@ def _long_4h_tiers(P1, R4):
             tag = '4h微负'
         else:
             tag = '4h破位'
-        r4 = repr_of(R4, b)
         d = _row(r)
         d.update({'score_4h': s4, 'tier': tag,
-                  'in_long_trend_4h': 'long_trend' in (r4.get('buckets') or []),
+                  'in_long_trend_4h': r4.get('pos') == 1,
                   'pos_4h': r4.get('pos'),
                   'gap_to_EE': _gap_pct(r.get('close'), r.get('EE'))})
         tiers[tag].append(d)
@@ -394,11 +473,13 @@ def _divergence(P1, R4, WARN1):
             r = P1.get(b)
             if not r or r.get('pos') != 1:
                 continue                                  # 只判日线仍多头
-            r4 = repr_of(R4, b)
+            r4 = repr_of(R4, r['key'])
+            if r.get('score') is None or r4.get('score') is None or r4.get('pos') is None:
+                continue
             s1, s4 = _sc(r), _sc(r4)
             if s1 >= LEAD_1D and s4 >= LEAD_4H:
                 continue                                  # 龙头不判
-            if 'long_trend' in (r4.get('buckets') or []):
+            if r4.get('pos') == 1:
                 continue                                  # 4h 仍持多不判
             hits.append((b, r, r4))
         if not hits:
@@ -431,15 +512,24 @@ def _divergence(P1, R4, WARN1):
     return {'sectors': sectors, 'items': items}
 
 
-def _attach_4h(rows, R4):
+def _attach_4h(rows, R4, prev_date=None):
     """给日线桶条目补 4h 状态（score / pos / 是否仍在 4h 多头桶），供渲染分档用。
     仅写 JSON，不影响 12 段文本输出。"""
     for r in rows:
         r4 = repr_of(R4, r.get('key', ''))
         r['score_4h'] = r4.get('score')
         r['pos_4h'] = r4.get('pos')
-        r['in_long_trend_4h'] = 'long_trend' in (r4.get('buckets') or [])
+        r['in_long_trend_4h'] = r4.get('pos') == 1
         r['key_4h'] = r4.get('key')
+        signals = r4.get('recent_signals') or []
+        last = r4.get('last') or {}
+        touches = [iso_day(d) for d in r.get('retest_dates') or [] if iso_day(d)]
+        r['repaired'] = bool(r4.get('pos') == 1 and last.get('type') == 'BK'
+            and prev_date and iso_day(last.get('date')) and iso_day(last['date']) > prev_date
+            and len(signals) >= 2 and signals[-2].get('type') == 'SP'
+            and signals[-2].get('date', '') < last['date']
+            and touches and max(touches) <= iso_day(last['date']))
+        r['last_signal_4h'] = last
     return rows
 
 
@@ -462,43 +552,34 @@ def _industrial_grade(d, s1, s4, warn, weak):
     return d
 
 
-def _turn(scr1, scr4, P1):
-    """【七】阶段性转折：A 4h 多转空 × 日线裁决 / B 反向信号"""
-    rows4 = {}
-    for it in scr4['buckets'].get('long_to_short', []):
-        if it.get('close') is None:
-            continue
-        k, sd = it['key'], it.get('signal_date') or ''
-        if k in rows4 and rows4[k][0] >= sd:
-            continue
-        rows4[k] = (sd, it)
-    a = []
-    for k, (sd, it) in sorted(rows4.items(), key=lambda x: (x[1][1].get('score') or 0)):
-        b = base_of(k)
-        r1 = P1.get(b, {})
-        p1 = r1.get('pos')
-        if p1 == -1:
-            v = '共振空'
-        elif p1 == 0:
-            v = '已离场'
-        elif p1 == 1:
-            v = '日线仍多'
-        else:
-            v = '?'
-        d = _row_bucket(it)
-        d.update({'pos_1d': p1, 'verdict': v, 'EE_1d': r1.get('EE'), 'score_1d': r1.get('score')})
-        a.append(d)
-    b_list = []
-    for it in scr4['buckets'].get('short_to_long', []):
-        d = _row_bucket(it)
-        d['pos_1d'] = P1.get(base_of(it.get('key', '')), {}).get('pos')
-        b_list.append(d)
-    warn = {}
-    for nm, arr in (('4h短转长预警', scr4['buckets'].get('short_to_long_warning', [])),
-                    ('1d短转长预警', scr1['buckets'].get('short_to_long_warning', []))):
-        warn[nm] = [{'code': base_of(x.get('key', '')), 'name': x.get('name', ''),
-                     'signal_date': x.get('signal_date'), 'score': x.get('score')} for x in arr]
-    return {'A': a, 'B': b_list, 'warnings': warn}
+def _turn(scr1, scr4, P1, R4=None):
+    """历史转折与当前仓位分别核验；后续反向信号覆盖旧事件。"""
+    R4 = R4 or {}
+    result = {'A': [], 'B': [], 'warnings': {}, 'superseded': []}
+    for bucket, dest in (('long_to_short', 'A'), ('short_to_long', 'B')):
+        latest = {}
+        for item in scr4['buckets'].get(bucket, []):
+            key = item['key']
+            if item.get('close') is not None and (key not in latest or str(item.get('signal_date') or '') > str(latest[key].get('signal_date') or '')):
+                latest[key] = item
+        for key, it in latest.items():
+            daily, four = P1.get(base_of(key), {}), repr_of(R4, key)
+            p1, p4 = daily.get('pos'), four.get('pos')
+            last = four.get('last') or {}
+            opposite = ('BK', 'BP') if dest == 'A' else ('SK', 'SP')
+            if last.get('type') in opposite and str(last.get('date') or '') > str(it.get('signal_date') or ''):
+                result['superseded'].append({'key': key, 'bucket': bucket, 'signal_date': it.get('signal_date'), 'last_signal': last})
+                continue
+            verdict = ('共振空' if p1 == p4 == -1 else '日空 / 4h观望' if p1 == -1 and p4 == 0
+                       else '已离场' if p1 == 0 else '日线仍多' if p1 == 1 else '状态待核验')
+            row = _row_bucket(it)
+            row.update(pos_1d=p1, pos_4h=p4, verdict=verdict, EE_1d=daily.get('EE'), score_1d=daily.get('score'),
+                       current_long_4h=p4 == 1 and last.get('type') == 'BK', last_signal_4h=last)
+            result[dest].append(row)
+    for label, bucket, source in (('4h短转长预警', 'short_to_long_warning', scr4), ('1d短转长预警', 'short_to_long_warning', scr1)):
+        result['warnings'][label] = [{'code': base_of(x['key']), 'name': x.get('name', ''),
+                'signal_date': x.get('signal_date'), 'score': x.get('score')} for x in source['buckets'].get(bucket, [])]
+    return result
 
 
 def _rank_radar(scr1):
@@ -675,7 +756,7 @@ def render_text(f: dict) -> str:
             mk = '  <<< 新贵' if it['risen'] else ('  <<< 掉队' if it['fallen'] else '')
             hs = " ".join(str(x.get('rank')) if x.get('rank') is not None else '-'
                           for x in (it.get('rank_history') or []))
-            L.append(f"    #{it['rank']:<4}{it['code']:7s}{it['name']:12s}sc={_f2(it['score']):>7} "
+            L.append(f"    #{str(it.get('rank') or '—'):<4}{it['code']:7s}{it['name']:12s}sc={_f2(it['score']):>7} "
                      f"chg={_sign(chg)} {it.get('rank_status', '')}{mk}")
             L.append(f"         7日轨迹: {hs}")
 
@@ -708,12 +789,11 @@ def _ordered_sectors(mapping):
 # ---------------------------------------------------------------- CLI
 def main():
     ap = argparse.ArgumentParser(description="期货看板每日总结 · 事实扫描器（本地数据版）")
-    ap.add_argument("--data-date", help="数据日期 YYYY-MM-DD（默认取 1d screening 的 generated_at）")
+    ap.add_argument("--data-date", help="数据日期 YYYY-MM-DD（必须与实际筛选行情日期一致）")
     ap.add_argument("--prev-date", help="上一交易日 YYYY-MM-DD（默认取快照中最近一份）")
     ap.add_argument("--text-only", action="store_true", help="只打印文本，不落盘")
     args = ap.parse_args()
 
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     f = scan(data_date=args.data_date, prev_date=args.prev_date)
 
     if args.text_only:
@@ -722,9 +802,8 @@ def main():
 
     SCAN_DIR.mkdir(parents=True, exist_ok=True)
     tag = f['data_date']
-    _dump(SCAN_DIR / f"scan_{tag}.json", f)
+    archive_scan(f)
     txt = render_text(f)
-    (SCAN_DIR / f"scan_{tag}.txt").write_text(txt, encoding="utf-8")
     print(txt)
     print(f"\n[产物] {SCAN_DIR / f'scan_{tag}.json'}")
     print(f"[产物] {SCAN_DIR / f'scan_{tag}.txt'}")

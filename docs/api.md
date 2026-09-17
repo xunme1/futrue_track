@@ -206,3 +206,6 @@
    BK▲红、SK▼绿、SP/BP 橙、SB 金、DSB 橙、DSBE 紫。
 5. 数据每日收盘后更新一次（流水线），前端无需轮询；如需"今日新信号总览"，遍历 /api/symbols
    找 `last_signal.date == last_date` 的品种即可。
+
+
+日报v2归档：`GET /api/reports/{date}` 从 `daily_summary_{date}.json` 返回发布HTML时的事实副本与已采用叙事，不推算数据日。自定义报告日以该成品记录为准。缺少有效成品记录时返回404；旧HTML仍可通过 `/html` 预览。`GET /api/reports` 的摘要同样来自成品记录，不读取后来变化的叙事源文件。

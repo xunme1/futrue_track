@@ -62,6 +62,9 @@ class TestDivergence(unittest.TestCase):
         # 4h：l 转负、bz 仍正，两者均已平仓（不在 4h long_trend 桶）
         R4 = {'l2701': _row('l2701', -0.49, 8540.0, DD=8452.75, EE=8295.67, rank_change=0),
               'bz2610': _row('bz2610', 0.29, 9057.0, DD=8862.75, EE=8610.67, rank_change=0)}
+        P1.update({c: _row(c + '2610', -1, 100, pos=-1) for c in ('SH', 'sp')})
+        for row in R4.values():
+            row['pos'] = 0
         return P1, R4
 
     def test_industrial_negative_4h_is_divergence(self):
@@ -89,6 +92,8 @@ class TestDivergence(unittest.TestCase):
         """农产品 4 条全中 → 多头抵抗（不砍、可低吸）"""
         P1 = {'m': _row('m2701', 3.19, 3385.0, DD=3371.75, EE=3342.33, rank_change=2)}
         R4 = {'m2701': _row('m2701', 0.02, 3385.0, DD=3371.75, EE=3342.33, rank_change=2)}
+        P1.update({c: _row(c + '2610', -1, 100, pos=-1) for c in ('y', 'OI')})
+        R4['m2701']['pos'] = 0
         d = sr._divergence(P1, R4, WARN1=set())
         self.assertEqual(d['items'][0]['verdict'], '多头抵抗')
         self.assertEqual(d['items'][0]['level'], '🟡')
@@ -97,6 +102,8 @@ class TestDivergence(unittest.TestCase):
         """close < DD（条件 2 不满足）→ 回落到工业品口径，不再判抵抗"""
         P1 = {'m': _row('m2701', 3.19, 3300.0, DD=3371.75, EE=3342.33, rank_change=2)}
         R4 = {'m2701': _row('m2701', 0.02, 3300.0, DD=3371.75, EE=3342.33, rank_change=2)}
+        P1.update({c: _row(c + '2610', -1, 100, pos=-1) for c in ('y', 'OI')})
+        R4['m2701']['pos'] = 0
         d = sr._divergence(P1, R4, WARN1=set())
         self.assertNotEqual(d['items'][0]['verdict'], '多头抵抗')
 
@@ -121,17 +128,15 @@ class TestDivergence(unittest.TestCase):
         self.assertEqual(d['sectors'], [])
         self.assertEqual(d['items'], [])
 
-    def test_missing_symbols_count_as_gone(self):
-        """板块内无数据的品种按「已离场」计入氛围 —— 与 daily_scan 口径一致。
-        这意味着数据缺失会推高 mood_n，是已知行为，不是静默吞掉。"""
+    def test_missing_symbols_are_not_counted_as_gone(self):
+        """缺失品种不能被伪造成已离场，从而触发板块分歧。"""
         P1 = {'cu': _row('cu2610', 5.0, 100.0, DD=95.0, EE=90.0)}   # 有色其余 9 只无数据
         P1['cu']['buckets'] = ['long_trend']                         # 自身仍在日线多头榜
         # 4h score 0.5 < 1.0 → 不构成龙头，正常进入判定
         R4 = {'cu2610': _row('cu2610', 0.5, 100.0, DD=95.0, EE=90.0)}
         d = sr._divergence(P1, R4, WARN1=set())
-        self.assertTrue(d['sectors'])
-        self.assertEqual(d['sectors'][0]['sector'], '有色')
-        self.assertEqual(len(d['sectors'][0]['gone']), 9)
+        self.assertEqual(d['sectors'], [])
+        self.assertEqual(sr.sector_mood(P1, '有色'), ([], []))
 
 
 class TestTurn(unittest.TestCase):

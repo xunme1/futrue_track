@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.core.config import DATA_DIR
+from backend.pipeline.report_store import atomic_json, atomic_text, iso_day, digest
 
 REPORTS_DIR = DATA_DIR / "reports"
 SCAN_DIR = REPORTS_DIR / "scan"
@@ -78,7 +79,9 @@ def _names(rows, maxn=0) -> str:
 
 # ---------------------------------------------------------------- 兜底叙事
 def fallback_tone(f):
-    """从两口径计数变化给当日定性"""
+    """从可核验的两口径计数变化给当日定性。"""
+    if any(v.get('unknown', 0) for v in f.get('coverage', {}).values()):
+        return '数据不完整 · 暂停方向定性'
     o, p = f['overview']['1d'], f['overview'].get('prev_1d')
     o4 = f['overview']['4h']
     d_long = o['long_trend'] - (p or {}).get('long_trend', o['long_trend'])
@@ -87,6 +90,8 @@ def fallback_tone(f):
     n_bk = sum(1 for x in acts if x.get('signal') == 'BK')
     n_sk = sum(1 for x in acts if x.get('signal') == 'SK')
     n_sp = sum(1 for x in acts if x.get('signal') == 'SP')
+    if p is None:
+        return '基线不足 · 观察当日状态'
     if d_long >= 2 and n_bk:
         return "多头反攻日"
     if n_sp >= 3 and not n_sk:
@@ -128,10 +133,10 @@ def fallback_cautions(f):
     o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
     n_sl, p_sl = o4.get('short_to_long', 0), p4.get('short_to_long')
     if p_sl is not None and n_sl > p_sl:
-        real = f['turn']['B']
+        real = [x for x in f['turn']['B'] if x.get('current_long_4h')]
         out.append({
             'title': f"别误读「4h 空转多 {p_sl}→{n_sl}」",
-            'body': (f"其中真正回到 4h 多头桶（= 重新 BK）的只有 {len(real)} 只"
+            'body': (f"其中当前4h持多且最近信号为 BK的只有 {len(real)} 只"
                      + (f"（{_names(real, 6)}）" if real else "")
                      + "，其余仅是蓝转红候选，不构成翻多。"),
         })
@@ -183,6 +188,12 @@ def _table(headers, rows):
 
 def _section(n, title, body, note=None):
     note_html = f'<div class="note">{_esc(note)}</div>' if note else ""
+    if n >= 4:
+        return (f'<details class="card fold-section"><summary>'
+                f'<h2><span class="n">{n}</span><span>{title}</span></h2>'
+                '<span class="fold-label" aria-hidden="true"><span class="fold-show">展开</span>'
+                '<span class="fold-hide">收起</span><span class="fold-arrow">⌄</span></span>'
+                f'</summary><div class="fold-body">{note_html}{body}</div></details>')
     return f'<div class="card"><h2><span class="n">{n}</span>{title}</h2>{note_html}{body}</div>'
 
 
@@ -285,6 +296,7 @@ def s1_overview(f, notes):
     body = (f'<div class="ov"><div class="ovc"><div class="ot">日线口径</div>{left}</div>'
             f'<div class="ovc"><div class="ot">4 小时口径</div>{right}</div></div>'
             f'<p style="margin-top:12px">当日日线新信号：<b>{_esc(act_txt)}</b></p>')
+    body += '<p>当日4小时新信号：<b>' + _esc('、'.join(x['code'] + '(' + str(x['signal']) + ')' for x in f.get('new_signals', {}).get('4h', [])) or '无') + '</b></p>'
     return _section(1, "两口径总览", body, notes.get('1'))
 
 
@@ -324,6 +336,8 @@ def s2_leaders(f, notes):
                               [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
                                 _n(r.get('score_4h')), f"{_n(r.get('gap_to_EE'))}%", _esc(r['tier'])]
                                for r in ended]))
+    if tiers.get('4h未知'):
+        parts.append('<h3>⚪ 4h数据未知 · 暂停节奏判断</h3><p>' + _esc(_names(tiers['4h未知'])) + '</p>')
     if not parts:
         parts.append("<p>当日无满足龙头门槛的品种。</p>")
     return _section(2, "📈 趋势与龙头（权重最高 · 重点看）", "".join(parts), notes.get('2'))
@@ -331,11 +345,12 @@ def s2_leaders(f, notes):
 
 def s3_retest(f, notes):
     rows = f['leader_retest']
-    done = [r for r in rows if r.get('pos_4h') == 1 and (r.get('score_4h') or 0) >= 1.0]
-    going = [r for r in rows if r.get('in_long_trend_4h') and r not in done]
-    alert = [r for r in rows if r not in done and r not in going
+    done = [r for r in rows if r.get('repaired')]
+    unknown = [r for r in rows if r.get('pos_4h') is None or r.get('score_4h') is None]
+    going = [r for r in rows if r.get('in_long_trend_4h') and r not in done and r not in unknown]
+    alert = [r for r in rows if r not in done and r not in going and r not in unknown
              and isinstance(r.get('rank_change'), int) and r['rank_change'] < 0]
-    upgraded = [r for r in rows if r not in done and r not in going and r not in alert]
+    upgraded = [r for r in rows if r not in done and r not in going and r not in alert and r not in unknown]
 
     def t(rows_, tag):
         if not rows_:
@@ -347,10 +362,11 @@ def s3_retest(f, notes):
                            _n(r.get('EE')), f"{r.get('retest_count') or 0} 次"]
                           for r in rows_]))
 
-    body = (t(done, "✅ 回踩结束 / 4h 重新走强（优先低吸）")
-            + t(going, "🟡 回踩进行中（4h 仍持多、贴零/微正 → 持有观察）")
+    body = (t(done, "✅ 已核验平多后重新开多（修复仍需延续）")
+            + t(going, "🟡 持续持多（未确认本期重新开多，结合价位观察）")
             + t(alert, "⚠️ 回踩偏警戒（排名动量衰减）")
-            + t(upgraded, "🚨 回踩已升级（4h 转弱，日线仍多）"))
+            + t(upgraded, "🚨 回踩已升级（4h 转弱，日线仍多）")
+            + t(unknown, "⚪ 4h数据不足（暂停修复判断）"))
     if not body:
         body = f"<p>当日无龙头回踩触线品种（回踩桶 {len(rows)} 只）。</p>"
     return _section(3, "🔁 龙头回踩（提升权重 · 优先于分歧）", body, notes.get('3'))
@@ -408,7 +424,9 @@ def s6_turn(f, notes):
     A = f['turn']['A']
     MARK = {'共振空': ('🔴', '可跟空（4h + 日线双级共振）'),
             '已离场': ('⬜', '趋势偏空，等日线 SK 才做空'),
-            '日线仍多': ('🟨', '按回踩处理，不做空')}
+            '日线仍多': ('🟨', '日线仍多，短周期转折需核验'),
+            '日空 / 4h观望': ('⬜', '日线持空、4h观望，尚非双级共振'),
+            '状态待核验': ('⚪', '状态不足，暂不判断共振')}
     parts = []
     if A:
         rows = [[MARK.get(x['verdict'], ('⚪', ''))[0], f"<b>{_esc(x['name'])}</b>", _esc(x['code']),
@@ -420,9 +438,9 @@ def s6_turn(f, notes):
     B = f['turn']['B']
     if B:
         rows = [[f"<b>{_esc(x['name'])}</b>", _esc(x['code']), _n(x['score']),
-                 _esc(_md(x.get('signal_date'))), _esc(x.get('pos_1d'))] for x in B]
-        parts.append("<h3>C. 反向信号（4h 空转多 —— 多为假转折，需日线确认）</h3>"
-                     + _table(['品种', '代码', '4h', '信号日', '日线 POS'], rows))
+                 _esc(_md(x.get('signal_date'))), _esc(x.get('pos_1d')), _esc(x.get('pos_4h'))] for x in B]
+        parts.append("<h3>B. 反向事件（历史转折需与当前4h持仓分别核验）</h3>"
+                     + _table(['品种', '代码', '4h', '信号日', '日线持仓', '4h持仓'], rows))
     for nm, arr in f['turn']['warnings'].items():
         if arr:
             parts.append(f"<p>{_esc(nm)}：{_esc(_names(arr, 20))}</p>")
@@ -444,10 +462,10 @@ def s7_pressure(f, notes):
     return _section(7, f"熊头遇压（重点 👀 · {len(rows)} 只）", body, notes.get('7'))
 
 
-def s8_tips(f, narrative):
+def s8_tips(f, narrative, report_date=None):
     tips = (narrative or {}).get('action_tips') or fallback_tips(f)
     lis = "".join(f"<li>{_esc(t)}</li>" for t in tips)
-    return _section(8, f"{_esc(_md(next_report_date(f)))} 操作提示（最简版）",
+    return _section(8, f"{_esc(_md(report_date or next_report_date(f)))} 操作提示（最简版）",
                     f'<ol class="oplist">{lis}</ol>')
 
 
@@ -523,6 +541,20 @@ CSS = """
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-top:16px;box-shadow:0 1px 3px rgba(28,36,48,.05)}
   h2{font-size:19px;font-weight:800;color:var(--navy);margin-bottom:14px;padding-bottom:9px;border-bottom:2px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   h2 .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--navy);color:#fff;font-size:14px;font-weight:800;flex:0 0 auto}
+  .fold-section{padding:0;overflow:hidden}
+  .fold-section>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 22px;cursor:pointer;list-style:none}
+  .fold-section>summary::-webkit-details-marker{display:none}
+  .fold-section>summary:hover{background:#f8fafc}
+  .fold-section>summary:focus-visible{outline:3px solid var(--blue);outline-offset:-3px;border-radius:13px}
+  .fold-section>summary h2{margin:0;padding:0;border:0;flex:1;min-width:0;flex-wrap:nowrap;align-items:flex-start;font-size:17px}
+  .fold-section>summary .n{margin-top:1px}
+  .fold-label{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;font-size:12px;font-weight:600;color:var(--blue)}
+  .fold-arrow{font-size:19px;line-height:1;display:inline-block}
+  .fold-hide,.fold-section[open] .fold-show{display:none}
+  .fold-section[open] .fold-hide{display:inline}
+  .fold-section[open] .fold-arrow{transform:rotate(180deg)}
+  .fold-section[open]>summary{border-bottom:1px solid var(--line)}
+  .fold-body{padding:14px 22px 20px}
   h3{font-size:15.5px;font-weight:800;margin:18px 0 9px;color:var(--ink);display:flex;align-items:center;gap:7px}
   h3:first-of-type{margin-top:4px}
   p{font-size:14.5px;color:var(--ink2);margin-bottom:9px}
@@ -579,6 +611,10 @@ CSS = """
     .ov{grid-template-columns:1fr}
     h1{font-size:21px}
     .card{padding:16px 15px}
+    .fold-section{padding:0}
+    .fold-section>summary{padding:16px 15px;gap:10px}
+    .fold-section>summary h2{font-size:16px}
+    .fold-body{padding:12px 15px 16px}
     header{padding:20px 18px 18px}
   }
 """
@@ -586,16 +622,19 @@ CSS = """
 
 def render_footer(f):
     return (f"<footer>口径：日线定趋势、4h 定节奏、板块定氛围、排名定动能。"
-            f"4h 转折一律以日线趋势为最终裁决；日线 EE = 多头生死线；4h 重新 BK = 回踩结束信号。"
+            f"4h 转折一律以日线趋势为最终裁决；日线 EE = 多头生死线；回踩修复需核验本期平多后重新开多；当前持多不等于本期修复。报告日默认下一工作日，未内置节假日日历。"
             f"数据源：{_esc(DASHBOARD_URL)} —— 扫描生成于 {_esc(f.get('created_at'))}，"
             f"数据基准 {_esc(f['data_date'])}，对比 {_esc(f['prev_date'])}。</footer>")
 
 
-def render_html(f, narrative) -> str:
-    report_date = next_report_date(f)
+def render_html(f, narrative, report_date=None) -> str:
+    report_date = validate_report_date(f, report_date or next_report_date(f))
+    validate_narrative(f, narrative, report_date)
     notes = (narrative or {}).get('section_notes') or {}
     body = "".join([
         render_header(f, narrative, report_date),
+        '<div class="note">' + _esc(f.get('narrative_status') or ((narrative.get('source') or '外部叙事') + ' · 已绑定本次事实' if narrative else '规则版 · 未使用模型叙事')) + '</div>',
+        '<div class="note">' + _esc('；'.join(f.get('quality_notes') or [])) + '</div>' if f.get('quality_notes') else '',
         render_oneline(f, narrative),
         render_cautions(f, narrative),
         s1_overview(f, notes),
@@ -605,7 +644,7 @@ def render_html(f, narrative) -> str:
         s5_short(f, notes),
         s6_turn(f, notes),
         s7_pressure(f, notes),
-        s8_tips(f, narrative),
+        s8_tips(f, narrative, report_date),
         s9_radar(f, notes),
         render_footer(f),
     ])
@@ -615,6 +654,56 @@ def render_html(f, narrative) -> str:
 <title>期货看板每日总结 · {_esc(report_date)} 作战地图</title>
 <style>{CSS}</style></head>
 <body><div class="wrap">{body}</div></body></html>"""
+
+
+def validate_report_date(facts, report_date):
+    if iso_day(report_date) != report_date or report_date <= facts['data_date']:
+        raise ValueError('报告日必须是晚于数据日的有效日期')
+    return report_date
+
+
+def validate_narrative(facts, narrative, report_date):
+    if narrative is None:
+        return
+    if not isinstance(narrative, dict):
+        raise ValueError('叙事必须是JSON对象')
+    if narrative.get('report_date') != report_date or narrative.get('input_hash') != facts.get('input_hash') or not facts.get('input_hash'):
+        raise ValueError('叙事日期或输入指纹不匹配，需依据当前扫描事实重写')
+    def text(value):
+        if not isinstance(value, str) or not value.strip() or len(value) > 4000:
+            raise ValueError('叙事字段必须为非空纯文本，最长4000字')
+    for field in ('tone', 'one_liner', 'source'):
+        if field in narrative:
+            text(narrative[field])
+    notes = narrative.get('section_notes', {})
+    if not isinstance(notes, dict) or set(notes) - set('123456789'):
+        raise ValueError('section_notes 必须使用1至9节号')
+    for value in notes.values():
+        text(value)
+    for field in ('action_tips', 'cautions'):
+        values = narrative.get(field, [])
+        if not isinstance(values, list):
+            raise ValueError(field + ' 必须是数组')
+        for value in values:
+            if field == 'cautions' and isinstance(value, dict):
+                text(value.get('title')); text(value.get('body'))
+            else:
+                text(value)
+
+
+def publish_report(facts, narrative=None, report_date=None, output_dir=None):
+    if facts.get('scan_version') != 2 or not facts.get('input_hash'):
+        raise ValueError('请先用新版 scan_report 重新生成事实')
+    root = Path(output_dir) if output_dir is not None else REPORTS_DIR
+    day = validate_report_date(facts, report_date or next_report_date(facts))
+    body = render_html(facts, narrative, day)
+    # 单文件原子替换，最后发布同批成品记录；API只读取归档副本，不再猜测数据日。
+    atomic_text(root / f'daily_summary_{day}.html', body)
+    atomic_json(root / f'daily_summary_{day}.json', {
+        'report_date': day, 'data_date': facts['data_date'], 'input_hash': facts['input_hash'],
+        'html_hash': digest(body), 'facts': facts, 'narrative': narrative,
+        'one_liner': (narrative or {}).get('one_liner') or fallback_one_liner(facts, fallback_tone(facts))})
+    return root / f'daily_summary_{day}.html'
 
 
 def main():
@@ -639,16 +728,20 @@ def main():
     narrative_file = NARRATIVE_DIR / f"narrative_{report_date}.json"
     narrative = None
     if narrative_file.exists():
-        with open(narrative_file, encoding="utf-8") as fp:
-            narrative = json.load(fp)
-        print(f"[叙事] 采用 {narrative_file}")
+        try:
+            with open(narrative_file, encoding="utf-8") as fp:
+                narrative = json.load(fp)
+            validate_narrative(f, narrative, report_date)
+        except ValueError as exc:
+            narrative = None
+            f['narrative_status'] = f'规则版 · 未采用旧叙事：{exc}'
+            print('[叙事] ' + f['narrative_status'])
+        else:
+            print(f"[叙事] 采用 {narrative_file}")
     else:
         print(f"[叙事] 无 narrative_{report_date}.json，使用规则化模板兜底")
 
-    out = REPORTS_DIR / f"daily_summary_{report_date}.html"
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8") as fp:
-        fp.write(render_html(f, narrative))
+    out = publish_report(f, narrative, report_date)
     print(f"[产物] {out}")
 
 

@@ -64,9 +64,11 @@ fi
 
 # 每日总结：事实扫描 → 合成 HTML 归档。规则版先出；LLM 按 docs/summary_contract.md
 # 写好 narrative/narrative_YYYY-MM-DD.json 后重跑第二步即可覆盖为叙事版。
-"${PYTHON_BIN}" -m backend.pipeline.scan_report \
-  || echo "[$(date '+%F %T %Z')] [警告] scan_report 运行失败（不影响日更产物）"
-"${PYTHON_BIN}" -m backend.pipeline.summary_render \
-  || echo "[$(date '+%F %T %Z')] [警告] summary_render 运行失败（不影响日更产物）"
+if "${PYTHON_BIN}" -m backend.pipeline.scan_report; then
+  "${PYTHON_BIN}" -m backend.pipeline.summary_render \
+    || echo "[$(date '+%F %T %Z')] [警告] summary_render 运行失败（不影响日更产物）"
+else
+  echo "[$(date '+%F %T %Z')] [警告] scan_report 失败，跳过渲染，保留既有报告"
+fi
 
 echo "===== $(date '+%F %T %Z') 日更完成 ====="

@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..core.config import DATA_DIR, PROJECT_ROOT, load_contracts
 from ..core.timeframes import json_dir, screening_file
+from ..pipeline.report_store import digest, iso_day
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 REPORTS_DIR = DATA_DIR / "reports"
@@ -118,7 +119,7 @@ def signals(key: str, timeframe: Literal["1d", "4h"] = Query("1d")):
 
 
 def _check_report_date(date: str) -> str:
-    if not _REPORT_DATE_RE.match(date):
+    if not _REPORT_DATE_RE.fullmatch(date) or iso_day(date) != date:
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
     return date
 
@@ -131,53 +132,44 @@ def reports():
         return out
     for fp in sorted(REPORTS_DIR.glob("daily_summary_*.html"), reverse=True):
         date = fp.stem.replace("daily_summary_", "")
-        if not _REPORT_DATE_RE.match(date):
+        if not _REPORT_DATE_RE.fullmatch(date) or iso_day(date) != date:
             continue
         meta = {"date": date, "has_html": True,
                 "data_date": None, "generated_at": None, "one_liner": None}
-        scan = SCAN_DIR / f"scan_{_infer_data_date(date)}.json"
-        try:
-            with open(scan, encoding="utf-8") as f:
-                facts = json.load(f)
-            meta["data_date"] = facts.get("data_date")
-            meta["generated_at"] = facts.get("created_at")
-            narrative = NARRATIVE_DIR / f"narrative_{date}.json"
-            if narrative.exists():
-                with open(narrative, encoding="utf-8") as f:
-                    meta["one_liner"] = (json.load(f) or {}).get("one_liner")
-        except (OSError, json.JSONDecodeError):
-            pass
+        record = _archived_report(date)
+        if record:
+            meta.update(data_date=record['data_date'],
+                        generated_at=record['facts'].get('created_at'), one_liner=record.get('one_liner'))
         out.append(meta)
     return out
 
 
-def _infer_data_date(report_date: str) -> str:
-    """报告日期 → 数据日期（回退到上一工作日；精确值以扫描产物为准）"""
+def _archived_report(day):
+    """成品与自己的事实副本绑定；缺少归档记录时不推算、拼接扫描数据。"""
+    path = REPORTS_DIR / f'daily_summary_{day}.json'
     try:
-        d = datetime.strptime(report_date, "%Y-%m-%d").date()
-    except ValueError:
-        return report_date
-    d -= timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d.isoformat()
+        with open(path, encoding='utf-8') as fp:
+            record = json.load(fp)
+        if not isinstance(record, dict):
+            return None
+        if record.get('report_date') != day or record.get('data_date') != record['facts'].get('data_date'):
+            return None
+        html_path = REPORTS_DIR / f'daily_summary_{day}.html'
+        if digest(html_path.read_text(encoding='utf-8')) != record.get('html_hash'):
+            return None
+        return record
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 @app.get("/api/reports/{date}")
 def report_detail(date: str):
-    """某日每日总结的事实 JSON（scan 产物）+ 叙事（若有）。"""
+    """返回发布HTML时归档的同批事实及已核验叙事，不读取后来变化的源文件。"""
     date = _check_report_date(date)
-    scan = SCAN_DIR / f"scan_{_infer_data_date(date)}.json"
-    if not scan.exists():
-        raise HTTPException(status_code=404, detail=f"无 {date} 的每日总结事实数据")
-    with open(scan, encoding="utf-8") as f:
-        facts = json.load(f)
-    narrative = NARRATIVE_DIR / f"narrative_{date}.json"
-    nar = None
-    if narrative.exists():
-        with open(narrative, encoding="utf-8") as f:
-            nar = json.load(f)
-    return {"report_date": date, "facts": facts, "narrative": nar}
+    record = _archived_report(date)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"无 {date} 的有效成品记录，请重新扫描并渲染")
+    return {"report_date": date, "facts": record['facts'], "narrative": record.get('narrative')}
 
 
 @app.get("/api/reports/{date}/html")
