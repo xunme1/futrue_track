@@ -43,6 +43,9 @@ export default function ReportModal({ open, onClose }: Props) {
   return <div className="modal-mask" onClick={onClose}>
     <div className="modal-panel report-panel" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose}>✕ 关闭</button>
+      {activeMeta && <a className="modal-download"
+        href={`/api/reports/${activeMeta.date}/html`}
+        download={`daily_summary_${activeMeta.date}.html`}>⬇️ 下载</a>}
       <h2 className="report-title">📰 每日日报</h2>
       <div className="report-body">
         <aside className="report-list">

@@ -66,9 +66,26 @@ export default function SeatModal({ open, onClose }: Props) {
 
   const activeMeta = items.find((r) => r.date === active) ?? null
 
+  const downloadAnalysis = () => {
+    if (!active || !analysis) return
+    const blob = new Blob([analysis], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `seat_analysis_${active}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return <div className="modal-mask" onClick={onClose}>
     <div className="modal-panel report-panel" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose}>✕ 关闭</button>
+      {activeMeta?.has_image && <a className="modal-download"
+        href={`/api/seat/${activeMeta.date}/image`}
+        download={`seat_direction_${activeMeta.date}.png`}>⬇️ 方向图</a>}
+      {activeMeta?.has_analysis && analysis && <button
+        className="modal-download modal-download-2"
+        onClick={downloadAnalysis}>⬇️ 解读</button>}
       <h2 className="report-title">🪑 席位追踪</h2>
       <div className="report-body">
         <aside className="report-list">

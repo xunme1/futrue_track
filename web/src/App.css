@@ -142,6 +142,9 @@ button { font: inherit; }
 .modal-panel { position: relative; width: 100%; max-width: 1080px; padding: 22px 30px 30px; background: #0b101b; border: 1px solid #35436b; border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .6); }
 .modal-close { position: absolute; top: 14px; right: 14px; padding: 4px 12px; background: #232d45; color: #cfd8ec; border: 1px solid #35436b; border-radius: 6px; cursor: pointer; font-size: 14px; }
 .modal-close:hover { border-color: #c93a3a; }
+.modal-download { position: absolute; top: 14px; right: 100px; padding: 4px 12px; background: #232d45; color: #cfd8ec; border: 1px solid #35436b; border-radius: 6px; cursor: pointer; font-size: 14px; text-decoration: none; }
+.modal-download:hover { border-color: #c93a3a; color: #fff; }
+.modal-download-2 { right: 196px; }
 .legend-doc { font-size: 13px; line-height: 1.9; }
 .legend-doc h2 { margin: 0 0 4px; color: #e8eefc; font-size: 16px; }
 .legend-intro, .legend-note { color: #8b97b5; }
