@@ -1,4 +1,4 @@
-import type { ContractInfo, ReportMeta, ScreeningReport, SignalData, Timeframe } from './types'
+import type { ContractInfo, ReportMeta, ScreeningReport, SeatAnalysis, SeatMeta, SignalData, Timeframe } from './types'
 
 async function getJson<T>(url: string): Promise<T> {
   const resp = await fetch(url)
@@ -33,6 +33,16 @@ export function fetchScreening(timeframe: Timeframe): Promise<ScreeningReport> {
 /** 归档日报列表（由 backend.pipeline.scan_report/summary_render 生成）。 */
 export function fetchReports(): Promise<ReportMeta[]> {
   return getJson<ReportMeta[]>('/api/reports')
+}
+
+/** 归档席位追踪列表（由 backend.pipeline.seat_daily 生成）。 */
+export function fetchSeatList(): Promise<SeatMeta[]> {
+  return getJson<SeatMeta[]>('/api/seat')
+}
+
+/** 某日席位分歧解读（Markdown 文本）。 */
+export function fetchSeatAnalysis(date: string): Promise<SeatAnalysis> {
+  return getJson<SeatAnalysis>(`/api/seat/${date}/analysis`)
 }
 
 /** 防止旧版服务端忽略 ?timeframe=4h 后把日线数据静默混入 4 小时页面。 */

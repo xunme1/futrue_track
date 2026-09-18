@@ -157,3 +157,15 @@ export interface ReportMeta {
   one_liner: string | null
   has_html: boolean
 }
+
+export interface SeatMeta {
+  date: string
+  has_image: boolean
+  has_analysis: boolean
+  has_detail: boolean
+}
+
+export interface SeatAnalysis {
+  date: string
+  markdown: string
+}

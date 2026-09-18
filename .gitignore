@@ -18,3 +18,4 @@ web/*.tsbuildinfo
 frontend/dist/
 frontend/dashboard.html
 .workbuddy/
+.DS_Store

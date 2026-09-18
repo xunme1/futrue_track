@@ -35,7 +35,7 @@ button { font: inherit; }
 .badge-sig { background: rgba(255, 170, 0, .15); color: #ffaa00; }
 .badge-date { color: #8b97b5; font-size: 12px; white-space: nowrap; }
 
-.legend-btn, .leaderboard-toggle, .leaderboard-close, .all-symbols-btn, .leaderboard-restore, .report-btn {
+.legend-btn, .leaderboard-toggle, .leaderboard-close, .all-symbols-btn, .leaderboard-restore, .report-btn, .seat-btn {
   background: transparent;
   color: #aebadb;
   border: 1px solid #35436b;
@@ -45,7 +45,7 @@ button { font: inherit; }
   font-size: 14px;
 }
 .report-btn { margin-left: auto; }
-.legend-btn:hover, .leaderboard-toggle:hover, .leaderboard-close:hover, .all-symbols-btn:hover, .leaderboard-restore:hover, .report-btn:hover { color: #fff; border-color: #c93a3a; }
+.legend-btn:hover, .leaderboard-toggle:hover, .leaderboard-close:hover, .all-symbols-btn:hover, .leaderboard-restore:hover, .report-btn:hover, .seat-btn:hover { color: #fff; border-color: #c93a3a; }
 
 .workspace { position: relative; flex: 1; min-height: 0; }
 .split-pane { display: flex; width: 100%; height: 100%; min-width: 0; }
@@ -196,6 +196,13 @@ button { font: inherit; }
 .report-item-liner { color: #aebadb; font-size: 12px; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .report-viewer { flex: 1; min-width: 0; display: flex; }
 .report-viewer iframe { flex: 1; border: 1px solid #35436b; border-radius: 8px; background: #f6f7f9; }
+.seat-viewer { overflow: hidden; }
+.seat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px; }
+.seat-scroll img { width: 100%; max-width: 760px; align-self: center; border: 1px solid #35436b; border-radius: 8px; }
+.seat-analysis { align-self: center; width: 100%; max-width: 760px; background: #111a2e; border: 1px solid #35436b; border-radius: 8px; padding: 14px 18px; }
+.seat-analysis h3 { margin: 0 0 8px; color: #e8eefc; font-size: 15px; }
+.seat-analysis p { margin: 0 0 10px; color: #cfd8ec; font-size: 13px; line-height: 1.8; }
+.seat-analysis p:last-child { margin-bottom: 0; }
 @media (max-width: 900px) {
   .report-panel { height: auto; }
   .report-body { flex-direction: column; }

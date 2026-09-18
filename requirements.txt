@@ -4,4 +4,8 @@ fastapi>=0.141,<1
 uvicorn[standard]>=0.52,<1
 rqdatac>=3.5,<4
 
+# 席位追踪（seat_*）：方向图渲染 + 繁微 REST + DeepSeek 解读
+matplotlib>=3.9,<4
+requests>=2.32,<3
+
 # iFinDPy 由同花顺 iFinD 客户端/SDK 提供，不从 PyPI 安装。

@@ -8,6 +8,7 @@ import SplitPane from './components/SplitPane'
 import SymbolPicker from './components/SymbolPicker'
 import ScreeningMethodModal from './components/ScreeningMethodModal'
 import ReportModal from './components/ReportModal'
+import SeatModal from './components/SeatModal'
 
 function hashKey(): string { return decodeURIComponent(location.hash.slice(1)) }
 function urlTimeframe(): Timeframe { return new URLSearchParams(location.search).get('timeframe') === '4h' ? '4h' : '1d' }
@@ -33,6 +34,7 @@ export default function App() {
   const [legendOpen, setLegendOpen] = useState(false)
   const [methodOpen, setMethodOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
+  const [seatOpen, setSeatOpen] = useState(false)
   const initialized = useRef(false)
 
   useEffect(() => {
@@ -135,6 +137,7 @@ export default function App() {
       {active && <span className="active-symbol">{active.name} {active.symbol}</span>}
       {badge && <span className="badge-area"><span className={`badge ${badge.posCls}`}>{badge.posText}</span>{badge.lastSig && <span className="badge badge-sig">{badge.lastSig.type} @ {data!.dates[badge.lastSig.i]}</span>}<span className="badge-date">{badge.lastDate}</span></span>}
       <button className="report-btn" onClick={() => setReportOpen(true)}>📰 日报</button>
+      <button className="seat-btn" onClick={() => setSeatOpen(true)}>🪑 席位</button>
       <button className="legend-btn" onClick={() => setLegendOpen(true)}>📖 信号解读</button>
     </header>
     <main className="workspace"><SplitPane collapsed={leaderboardCollapsed} left={leaderboard} right={<section className="chart-panel">
@@ -145,5 +148,6 @@ export default function App() {
     <ScreeningMethodModal open={methodOpen} onClose={() => setMethodOpen(false)} timeframe={timeframe} />
     <LegendModal open={legendOpen} onClose={() => setLegendOpen(false)} timeframe={timeframe} />
     <ReportModal open={reportOpen} onClose={() => setReportOpen(false)} />
+    <SeatModal open={seatOpen} onClose={() => setSeatOpen(false)} />
   </div>
 }

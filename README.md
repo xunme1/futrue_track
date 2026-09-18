@@ -30,7 +30,12 @@ future/
 │   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
 │   │   ├── scan_report.py     # 每日总结事实扫描：本地产物→结构化事实 JSON（判据 v4）
 │   │   ├── summary_narrator.py# 可选：调 DeepSeek 按 summary_contract 生成叙事（密钥走 DEEPSEEK_API_KEY）
-│   │   └── summary_render.py  # 每日总结合成渲染：事实+叙事（可选）→归档 HTML
+│   │   ├── summary_render.py  # 每日总结合成渲染：事实+叙事（可选）→归档 HTML
+│   │   ├── seat_core.py       # 席位追踪共享层：繁微API/三席分组/净持仓计算（移植自 seat_track）
+│   │   ├── seat_fetch.py      # 席位追踪第 1 步：抓会员持仓 → data/seat/seat_data_<日>.csv
+│   │   ├── seat_plot.py       # 席位追踪第 2 步：方向图 PNG（哑铃图，跨平台字体探测）
+│   │   ├── seat_report.py     # 席位追踪第 3 步：详情 JSON + DeepSeek 解读（可缺省）
+│   │   └── seat_daily.py      # 席位追踪日更编排：三步串行，接口未更新时按实际最新日归档
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -107,6 +112,11 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.summary_render  # 7. 合成每日总结 HTML（data/reports/）
 #    叙事格式见 docs/summary_contract.md；任一步失败由规则模板兜底；看板「📰 日报」入口回看历史总结
 #    判据体系见资料库《期货看板日报 · 方法论与复制指南》（v4）：农/工分流、回踩 vs 分歧裁决树
+
+# 席位追踪（服务器 refresh_seat.sh 每交易日 18:05 自动执行；需 FINO_APPKEY/FINO_APPSECRET，
+# AI 解读需 DEEPSEEK_API_KEY；产物归档 data/seat/，看板「🪑 席位」入口回看）：
+.venv/Scripts/python -m backend.pipeline.seat_daily                  # 一键：抓数→方向图→详情+解读
+.venv/Scripts/python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日补跑
 
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种

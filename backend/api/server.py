@@ -181,6 +181,52 @@ def report_html(date: str):
     return FileResponse(fp, media_type="text/html")
 
 
+SEAT_DIR = DATA_DIR / "seat"
+_SEAT_DATE_RE = re.compile(r"^\d{8}$")
+
+
+def _check_seat_date(date: str) -> str:
+    if not _SEAT_DATE_RE.fullmatch(date):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYYMMDD")
+    return date
+
+
+@app.get("/api/seat")
+def seat_list():
+    """已归档席位追踪列表（倒序）。由 backend.pipeline.seat_daily 生成。"""
+    out = []
+    if not SEAT_DIR.exists():
+        return out
+    for fp in sorted(SEAT_DIR.glob("seat_data_*.csv"), reverse=True):
+        date = fp.stem.removeprefix("seat_data_")
+        if not _SEAT_DATE_RE.fullmatch(date):
+            continue
+        out.append({"date": date,
+                    "has_image": (SEAT_DIR / f"seat_direction_{date}.png").exists(),
+                    "has_analysis": (SEAT_DIR / f"seat_analysis_{date}.md").exists(),
+                    "has_detail": (SEAT_DIR / f"seat_detail_{date}.json").exists()})
+    return out
+
+
+@app.get("/api/seat/{date}/image")
+def seat_image(date: str):
+    """某日席位方向图 PNG。"""
+    fp = SEAT_DIR / f"seat_direction_{_check_seat_date(date)}.png"
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的席位方向图")
+    return FileResponse(fp, media_type="image/png")
+
+
+@app.get("/api/seat/{date}/analysis")
+def seat_analysis(date: str):
+    """某日席位分歧解读 Markdown 文本。"""
+    date = _check_seat_date(date)
+    fp = SEAT_DIR / f"seat_analysis_{date}.md"
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的席位解读")
+    return {"date": date, "markdown": fp.read_text(encoding="utf-8")}
+
+
 # 静态前端（放在最后，避免覆盖 /api 路由）
 # 优先托管 React 构建产物 frontend/dist/（web/ 工程 npm run build 输出）；
 # 不存在时回退托管 frontend/ 根目录（旧版 dashboard.html 离线快照）
