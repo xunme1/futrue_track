@@ -85,10 +85,19 @@ def _number(value):
     return out if math.isfinite(out) else None
 
 
-def _pick(rows, field):
-    """Pick one disclosed value without double-counting duplicate rank rows."""
-    values = [_number(row.get(field)) for row in rows]
-    values = [value for value in values if value is not None]
+def _pick(rows, *fields):
+    """Pick one disclosed value without double-counting duplicate rank rows.
+
+    繁微字段名有两种风格：品种合计口径用 total_long/total_short，
+    具体合约口径用 long/short；按别名顺序取每行第一个非空值。
+    """
+    values = []
+    for row in rows:
+        for field in fields:
+            value = _number(row.get(field))
+            if value is not None:
+                values.append(value)
+                break
     return max(values, key=abs) if values else None
 
 
@@ -101,14 +110,14 @@ def _member_position(rows, date):
     ]
     if not matched:
         return None
-    long_value = _pick(matched, "total_long")
-    short_value = _pick(matched, "total_short")
+    long_value = _pick(matched, "total_long", "long")
+    short_value = _pick(matched, "total_short", "short")
     if long_value is None and short_value is None:
         return None
     long_value = long_value or 0.0
     short_value = short_value or 0.0
-    long_change = _pick(matched, "total_long_change")
-    short_change = _pick(matched, "total_short_change")
+    long_change = _pick(matched, "total_long_change", "long_change")
+    short_change = _pick(matched, "total_short_change", "short_change")
     change = None
     if long_change is not None or short_change is not None:
         change = (long_change or 0.0) - (short_change or 0.0)

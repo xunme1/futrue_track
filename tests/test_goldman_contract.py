@@ -50,6 +50,23 @@ class GoldmanContractTests(unittest.TestCase):
         self.assertFalse(value["available"])
         self.assertIsNone(value["today"])
 
+    def test_contract_level_field_names(self):
+        """繁微具体合约口径的字段是 long/short（非 total_long/total_short）。"""
+        rows = [
+            {"trade_date": "20260917", "member_name": "高盛期货",
+             "volume": 0, "volume_change": 0,
+             "long": 6485, "long_change": 446, "short": 0, "short_change": 0},
+            {"trade_date": "20260918", "member_name": "高盛期货",
+             "volume": 0, "volume_change": 0,
+             "long": 6823, "long_change": 338, "short": 0, "short_change": 0},
+        ]
+        value = gc.build_contract_position(rows, "CU2611", "20260918", "20260917")
+        self.assertTrue(value["available"])
+        self.assertEqual(value["today"], 6823)
+        self.assertEqual(value["previous"], 6485)
+        self.assertEqual(value["change"], 338)
+        self.assertEqual(value["previous_source"], "previous_row")
+
     def test_fetch_deduplicates_contracts_and_isolates_failure(self):
         calls = []
 
