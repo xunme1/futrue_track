@@ -35,7 +35,7 @@ future/
 │   │   ├── seat_fetch.py      # 席位追踪第 1 步：抓会员持仓 → data/seat/seat_data_<日>.csv
 │   │   ├── seat_plot.py       # 席位追踪第 2 步：方向图 PNG（哑铃图，跨平台字体探测）
 │   │   ├── seat_report.py     # 席位追踪第 3 步：详情 JSON + DeepSeek 解读（可缺省）
-│   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（繁微具体合约 + 米筐主次映射）
+│   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（米筐合约级会员持仓 + 主次映射）
 │   │   └── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
@@ -135,7 +135,9 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 #    GET /api/symbols  GET /api/signals/rb8888  GET / （看板）
 ```
 
-高盛附录只统计繁微返回的「高盛期货」，按目标日固定的主力/次主力合约比较今昨日净持仓。
+高盛附录只统计「高盛期货」，按目标日固定的主力/次主力合约比较今昨日净持仓；
+主次映射与合约级会员持仓均取自米筐（繁微合约级接口存在品种错配与覆盖缺口，已弃用，
+仅品种合计口径仍走繁微），逐行校验响应合约代码与请求一致。
 产物为 `data/seat/goldman_contract_positions_<日>.json` 与净多、净空两张 PNG；18:05
 席位任务完成后会把图片以内嵌方式追加到当日日报末尾。具体合约未披露时显示为空，且不会
 把“未进入交易所前 20 名”解释为真实零持仓。主次映射及逐合约成功响应均按数据日缓存，

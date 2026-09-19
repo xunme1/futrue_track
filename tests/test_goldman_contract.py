@@ -3,6 +3,8 @@ import unittest
 import warnings
 from pathlib import Path
 
+import pandas as pd
+
 from backend.pipeline import goldman_contract as gc
 
 
@@ -70,7 +72,7 @@ class GoldmanContractTests(unittest.TestCase):
     def test_fetch_deduplicates_contracts_and_isolates_failure(self):
         calls = []
 
-        def query(contract, start, end, fields):
+        def query(contract, start, end):
             calls.append(contract)
             if contract == "BAD":
                 raise RuntimeError("boom")
@@ -93,7 +95,7 @@ class GoldmanContractTests(unittest.TestCase):
     def test_contract_success_response_is_cached_individually(self):
         calls = []
 
-        def query(contract, start, end, fields):
+        def query(contract, start, end):
             calls.append(contract)
             return {"data": {"data": [row(end, long=100, long_change=10)]}}
 
@@ -105,6 +107,87 @@ class GoldmanContractTests(unittest.TestCase):
                     sleep_sec=0, cache_dir=Path(tmp),
                 )
         self.assertEqual(calls, ["CU1", "CU2"])
+
+    def test_mismatched_response_code_is_rejected_and_refetched(self):
+        """繁微曾出现请求 M2701 返回 JM2701 的错配，校验后必须丢弃并重新请求。"""
+        calls = []
+
+        def query(contract, start, end):
+            calls.append(contract)
+            if contract == "M2701" and calls.count("M2701") == 1:
+                return {"data": {"data": [
+                    {"code": "JM2701", "trade_date": end, "member_name": "高盛期货",
+                     "long": 999, "short": 0},
+                ]}}
+            if contract == "M2701":
+                return {"data": {"data": [
+                    {"code": "M2701", "trade_date": end, "member_name": "高盛期货",
+                     "long": 100, "short": 0},
+                ]}}
+            return {"data": {"data": [row(end, long=100, long_change=10)]}}
+
+        dominants = [{"symbol": "M", "main": "M2701", "sub": None},
+                     {"symbol": "CU", "main": "CU1", "sub": None}]
+        with tempfile.TemporaryDirectory() as tmp:
+            fetched, errors, _, _ = gc.fetch_contracts(
+                dominants, "20260917", "20260916", query_fn=query,
+                sleep_sec=0, cache_dir=Path(tmp),
+            )
+            self.assertFalse(fetched["M2701"]["available"])
+            self.assertIn("错配", errors["M2701"])
+            # 错配响应未进缓存，重跑会重新请求并命中正确数据
+            fetched2, errors2, _, _ = gc.fetch_contracts(
+                dominants, "20260917", "20260916", query_fn=query,
+                sleep_sec=0, cache_dir=Path(tmp),
+            )
+        self.assertEqual(calls.count("M2701"), 2)
+        self.assertTrue(fetched2["M2701"]["available"])
+        self.assertEqual(fetched2["M2701"]["today"], 100)
+        self.assertEqual(errors2, {})
+
+    def test_rq_member_rank_merges_long_and_short_boards(self):
+        """米筐持多/持空两榜按 (日期, 会员) 外连接合并，未上榜一侧记 0。"""
+        class FakeFutures:
+            @staticmethod
+            def get_member_rank(contract, trading_date=None, rank_by="volume", **kwargs):
+                rows = {
+                    "long": [
+                        ("2026-09-17", "高盛期货", 1, 6485.0, 446.0),
+                        ("2026-09-18", "高盛期货", 1, 6823.0, 338.0),
+                        ("2026-09-18", "中信期货", 2, 5000.0, -10.0),
+                    ],
+                    "short": [
+                        ("2026-09-18", "高盛期货", 5, 120.0, 30.0),
+                    ],
+                }[rank_by]
+                return pd.DataFrame(
+                    [(d, m, r, v, c) for d, m, r, v, c in rows],
+                    columns=["trading_date", "member_name", "rank", "volume", "volume_change"],
+                ).set_index("trading_date")
+
+        class FakeRQ:
+            futures = FakeFutures()
+
+        old = gc._rq_client
+        gc._rq_client = FakeRQ()
+        try:
+            resp = gc.rq_member_rank("CU2611", "20260917", "20260918")
+        finally:
+            gc._rq_client = old
+        rows = resp["data"]["data"]
+        gs = sorted(
+            (r for r in rows if r["member_name"] == "高盛期货"),
+            key=lambda r: r["trade_date"],
+        )
+        self.assertEqual(len(gs), 2)
+        self.assertEqual(gs[0]["code"], "CU2611")
+        # 09-17 只在持多榜：空侧记 0
+        self.assertEqual((gs[0]["total_long"], gs[0]["total_short"]), (6823 - 338, 0))
+        # 09-18 两榜都在
+        self.assertEqual((gs[1]["total_long"], gs[1]["total_short"]), (6823, 120))
+        self.assertEqual((gs[1]["total_long_change"], gs[1]["total_short_change"]), (338, 30))
+        # 其它会员也保留
+        self.assertTrue(any(r["member_name"] == "中信期货" for r in rows))
 
     def test_all_contract_requests_failing_aborts_addon(self):
         def query(*args):

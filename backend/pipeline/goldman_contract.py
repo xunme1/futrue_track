@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """高盛主力/次主力合约净持仓追踪。
 
-主次合约由 RiceQuant 确定，具体合约的会员持仓由繁微接口提供。结果按主力
-合约当日净持仓拆成净多、净空两个 Top N 榜单，并生成日报可内嵌的 PNG。
+主次合约与具体合约会员持仓均由 RiceQuant 提供（繁微合约级接口存在品种错配与
+覆盖缺口，仅品种合计口径仍走繁微，见 seat_fetch）。结果按主力合约当日净持仓
+拆成净多、净空两个 Top N 榜单，并生成日报可内嵌的 PNG。
 
     python -m backend.pipeline.goldman_contract --date 20260917 --top 15
 
@@ -32,19 +33,68 @@ from backend.pipeline.dominant_fetch import load_or_fetch
 from backend.pipeline.report_store import atomic_json
 from backend.pipeline.seat_core import (
     CN_NAME,
-    FIELDS,
     SEAT_DIR,
-    SLEEP_SEC,
-    get_member_rank,
     prev_trade_date,
     read_seat_csv,
 )
 from backend.pipeline.seat_plot import setup_font
-from backend.core.config import load_contracts
+from backend.core.config import load_config, load_contracts
 
 
 MEMBER_NAME = "高盛期货"
 DEFAULT_TOP_N = 15
+
+_rq_client = None
+
+
+def _rq():
+    """惰性登录米筐（复用 dominant_fetch 的 license 约定）。"""
+    global _rq_client
+    if _rq_client is None:
+        import rqdatac
+        key = (load_config().get("ricequant") or {}).get("license_key", "")
+        if not key:
+            raise RuntimeError(
+                "米筐 license 为空，请设置 FUTURES_RQDATA_LICENSE_KEY "
+                "或填写 config.yaml 的 ricequant.license_key"
+            )
+        rqdatac.init("license", key)
+        _rq_client = rqdatac
+    return _rq_client
+
+
+def rq_member_rank(contract, start_date, end_date, fields=None):
+    """米筐合约级会员持仓排名 → 繁微兼容形状 {"data": {"data": [...]}}。
+
+    持多/持空榜各查一次（top 20 披露口径），按 (trade_date, member_name) 外连接合并；
+    未上榜一侧记 0（与交易所披露口径一致：未披露按 0 展示，但不等于真实为零）。
+    每行带 code=contract，供下游校验响应与请求是否一致。
+    """
+    rq = _rq()
+    merged = {}
+    for rank_by, value_key, change_key in (
+        ("long", "total_long", "total_long_change"),
+        ("short", "total_short", "total_short_change"),
+    ):
+        df = rq.futures.get_member_rank(
+            contract, rank_by=rank_by, start_date=start_date, end_date=end_date
+        )
+        if df is None or len(df) == 0:
+            continue
+        df = df.reset_index()
+        for rec in df.to_dict("records"):
+            day = str(rec["trading_date"])[:10].replace("-", "")
+            name = str(rec.get("member_name") or "").strip()
+            if not name:
+                continue
+            row = merged.setdefault((day, name), {
+                "code": contract, "trade_date": day, "member_name": name,
+                "total_long": 0, "total_short": 0,
+                "total_long_change": 0, "total_short_change": 0,
+            })
+            row[value_key] = int(rec.get("volume") or 0)
+            row[change_key] = int(rec.get("volume_change") or 0)
+    return {"data": {"data": list(merged.values())}}
 
 # 与现有席位方向图保持同一视觉体系。
 BG = "#0e1e33"
@@ -171,20 +221,28 @@ def build_contract_position(rows, contract, trade_date, prev_date):
     }
 
 
-def _response_rows(response):
+def _response_rows(response, contract=None):
     if not isinstance(response, dict):
-        raise ValueError("繁微返回不是 JSON 对象")
+        raise ValueError("会员持仓返回不是 JSON 对象")
     data = response.get("data")
     if not isinstance(data, dict) or "data" not in data:
-        raise ValueError(f"繁微返回缺少 data.data（code={response.get('code')}）")
+        raise ValueError(f"会员持仓返回缺少 data.data（code={response.get('code')}）")
     rows = data.get("data") or []
     if not isinstance(rows, list):
-        raise ValueError("繁微 data.data 不是数组")
+        raise ValueError("会员持仓 data.data 不是数组")
+    if contract is not None:
+        # 繁微合约级接口存在品种错配（如请求 M2701 返回 JM2701），逐行校验 code
+        mismatched = sorted({
+            str(row.get("code")) for row in rows
+            if row.get("code") is not None and str(row.get("code")) != str(contract)
+        })
+        if mismatched:
+            raise ValueError(f"响应合约错配: 请求 {contract}，返回 {mismatched}")
     return rows
 
 
-def fetch_contracts(dominants, trade_date, prev_date, query_fn=get_member_rank,
-                    sleep_sec=SLEEP_SEC, cache_dir=None, force=False):
+def fetch_contracts(dominants, trade_date, prev_date, query_fn=rq_member_rank,
+                    sleep_sec=0, cache_dir=None, force=False):
     """Fetch every unique main/sub contract once; isolate individual failures."""
     contracts = []
     for row in dominants:
@@ -212,17 +270,17 @@ def fetch_contracts(dominants, trade_date, prev_date, query_fn=get_member_rank,
             if cache_path is not None and cache_path.exists() and not force:
                 try:
                     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                    _response_rows(cached)
+                    _response_rows(cached, contract)
                     response = cached
                     cache_hit = True
                 except (OSError, ValueError, TypeError):
                     response = None
             if response is None:
-                response = query_fn(contract, prev_date, trade_date, FIELDS)
-                _response_rows(response)
+                response = query_fn(contract, prev_date, trade_date)
+                _response_rows(response, contract)
                 if cache_path is not None:
                     atomic_json(cache_path, response)
-            rows = _response_rows(response)
+            rows = _response_rows(response, contract)
             fetched[contract] = build_contract_position(
                 rows, contract, trade_date, prev_date
             )
@@ -246,7 +304,7 @@ def fetch_contracts(dominants, trade_date, prev_date, query_fn=get_member_rank,
         if sleep_sec and index < len(contracts) and not cache_hit:
             time.sleep(sleep_sec)
     if contracts and successful_requests == 0:
-        raise RuntimeError("所有具体合约的繁微请求均失败")
+        raise RuntimeError("所有具体合约的会员持仓请求均失败")
     return fetched, errors, len(contracts), successful_requests
 
 
@@ -481,7 +539,7 @@ def _temporary_png(directory):
 
 
 def generate(trade_date, prev_date, top_n=DEFAULT_TOP_N, force=False,
-             query_fn=get_member_rank, sleep_sec=SLEEP_SEC, directory=None,
+             query_fn=rq_member_rank, sleep_sec=0, directory=None,
              dominants=None):
     """Generate/cache the Goldman contract JSON and two ranking charts."""
     trade_date = validate_day(trade_date, "数据日")
