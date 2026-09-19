@@ -47,6 +47,17 @@ class SummaryPipelineTests(unittest.TestCase):
              patch.object(scan, 'load_contracts', return_value=[{'symbol':k,'name':k} for k in keys]):
             return scan.scan(**kwargs)
 
+    @staticmethod
+    def goldman_appendix():
+        return {
+            'date': '20260915', 'prev_date': '20260914', 'member': '高盛期货',
+            'coverage': {'dominant_varieties': 70, 'main_missing': 2, 'sub_missing': 5},
+            'data_hash': 'data-hash', 'long_image_hash': 'long-hash',
+            'short_image_hash': 'short-hash',
+            'long_data_uri': 'data:image/png;base64,bG9uZw==',
+            'short_data_uri': 'data:image/png;base64,c2hvcnQ=',
+        }
+
     def test_native_payload_without_score_preserves_screening_score(self):
         data = inputs(pos4=1)
         for tf in scan.TIMEFRAMES:
@@ -189,6 +200,72 @@ class SummaryPipelineTests(unittest.TestCase):
             # 归档后修改源扫描，不应影响API返回已发布的事实。
             f['data_date']='2026-09-20'
             self.assertEqual(server.report_detail('2026-09-21')['facts']['data_date'],'2026-09-15')
+
+    def test_goldman_appendix_is_embedded_after_section_nine(self):
+        body = render.render_html(
+            self.run_scan(), None, goldman_appendix=self.goldman_appendix()
+        )
+        self.assertIn('附录 · 高盛主次合约净持仓追踪', body)
+        self.assertIn('data:image/png;base64,bG9uZw==', body)
+        self.assertLess(body.index('动量排名雷达'), body.index('高盛主次合约净持仓追踪'))
+        self.assertLess(body.index('高盛主次合约净持仓追踪'), body.index('<footer>'))
+
+    def test_published_record_archives_goldman_hashes_without_image_payload(self):
+        appendix = self.goldman_appendix()
+        render.publish_report(
+            self.run_scan(), output_dir=self.root, goldman_appendix=appendix
+        )
+        record = json.loads((self.root/'daily_summary_2026-09-16.json').read_text())
+        addon = record['addons']['goldman_contract_positions']
+        self.assertEqual(addon['long_image_hash'], 'long-hash')
+        self.assertNotIn('long_data_uri', addon)
+        self.assertIn('data:image/png;base64,bG9uZw==',
+                      (self.root/'daily_summary_2026-09-16.html').read_text())
+
+    def test_rerender_preserves_custom_date_and_narrative(self):
+        facts = self.run_scan()
+        narrative = {
+            'report_date': '2026-09-21', 'input_hash': facts['input_hash'],
+            'one_liner': '原有叙事保持不变', 'source': '测试叙事',
+        }
+        render.publish_report(
+            facts, narrative, report_date='2026-09-21', output_dir=self.root,
+            goldman_appendix={},
+        )
+        before = json.loads((self.root/'daily_summary_2026-09-21.json').read_text())
+        with patch.object(render, 'load_goldman_appendix', return_value=self.goldman_appendix()):
+            out = render.rerender_report_for_data_date('2026-09-15', reports_dir=self.root)
+        after = json.loads((self.root/'daily_summary_2026-09-21.json').read_text())
+        self.assertEqual(out.name, 'daily_summary_2026-09-21.html')
+        self.assertEqual(after['narrative'], narrative)
+        self.assertNotEqual(before['html_hash'], after['html_hash'])
+        self.assertIn('addons', after)
+
+    def test_load_goldman_appendix_rejects_mismatched_date(self):
+        root = self.root/'seat'
+        root.mkdir()
+        (root/'goldman_contract_positions_20260915.json').write_text(
+            json.dumps({'date':'20260914'}), encoding='utf-8')
+        (root/'goldman_contract_long_20260915.png').write_bytes(b'long')
+        (root/'goldman_contract_short_20260915.png').write_bytes(b'short')
+        self.assertIsNone(render.load_goldman_appendix('2026-09-15', root))
+
+    def test_load_goldman_appendix_embeds_complete_matching_bundle(self):
+        root = self.root/'seat-complete'
+        root.mkdir()
+        metadata = {
+            'date': '20260915', 'prev_date': '20260914', 'member': '高盛期货',
+            'coverage': {'dominant_varieties': 70, 'main_missing': 2, 'sub_missing': 5},
+        }
+        (root/'goldman_contract_positions_20260915.json').write_text(
+            json.dumps(metadata), encoding='utf-8')
+        (root/'goldman_contract_long_20260915.png').write_bytes(b'long')
+        (root/'goldman_contract_short_20260915.png').write_bytes(b'short')
+        appendix = render.load_goldman_appendix('2026-09-15', root)
+        self.assertEqual(appendix['date'], '20260915')
+        self.assertEqual(appendix['coverage']['main_missing'], 2)
+        self.assertEqual(appendix['long_data_uri'], 'data:image/png;base64,bG9uZw==')
+        self.assertEqual(len(appendix['short_image_hash']), 64)
 
     def test_mixed_html_and_record_not_accepted(self):
         out=render.publish_report(self.run_scan(),output_dir=self.root)

@@ -22,6 +22,10 @@ ls -t /opt/futrue_track/data/reports/scan/scan_*.json | head -1
 
 `summary_narrator` 未配置密钥、调用失败或单节字段不合格时只缺省对应节，日更照常出规则兜底版；它成功后会自动重渲染，无需再手动执行第 3 步。日更脚本 `tools/refresh_daily.sh` 已按 scan → narrator → render 顺序接入。
 
+18:05 的 `seat_daily` 会在高盛主/次合约净持仓图生成成功后，按数据日找到已经发布的日报，
+保留原报告日期、事实和叙事并原子重渲染，在第 9 节后追加席位附录。附录不属于 LLM 叙事
+契约，也不改变 `input_hash`；其数据与图片哈希单独归档在成品 JSON 的 `addons` 字段。
+
 - 行情日期以 `data_date` 为准，不能用 `created_at` / `generated_at` 判断行情是否更新。当前版本拒绝两周期行情日不一致；显式 `--data-date` 也必须等于输入实际行情日。
 - 报告日期 = 数据日的**下一交易日**（09-15 收盘 → `narrative_2026-09-16.json`）。
 

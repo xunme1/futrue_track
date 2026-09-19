@@ -35,7 +35,8 @@ future/
 │   │   ├── seat_fetch.py      # 席位追踪第 1 步：抓会员持仓 → data/seat/seat_data_<日>.csv
 │   │   ├── seat_plot.py       # 席位追踪第 2 步：方向图 PNG（哑铃图，跨平台字体探测）
 │   │   ├── seat_report.py     # 席位追踪第 3 步：详情 JSON + DeepSeek 解读（可缺省）
-│   │   └── seat_daily.py      # 席位追踪日更编排：三步串行，接口未更新时按实际最新日归档
+│   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（繁微具体合约 + 米筐主次映射）
+│   │   └── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -118,6 +119,9 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.seat_daily                  # 一键：抓数→方向图→详情+解读
 .venv/Scripts/python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日补跑
 
+# 高盛主/次合约净持仓附录也可单独补跑；默认各显示前 15，并重渲染匹配的已发布日报：
+.venv/Scripts/python -m backend.pipeline.goldman_contract --date 20260917 --top 15
+
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种
 .venv/Scripts/python -m backend.pipeline.download --source ricequant     # 临时覆盖全部期货的数据源
@@ -130,6 +134,12 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m uvicorn backend.api.server:app --host 0.0.0.0 --port 8000
 #    GET /api/symbols  GET /api/signals/rb8888  GET / （看板）
 ```
+
+高盛附录只统计繁微返回的「高盛期货」，按目标日固定的主力/次主力合约比较今昨日净持仓。
+产物为 `data/seat/goldman_contract_positions_<日>.json` 与净多、净空两张 PNG；18:05
+席位任务完成后会把图片以内嵌方式追加到当日日报末尾。具体合约未披露时显示为空，且不会
+把“未进入交易所前 20 名”解释为真实零持仓。主次映射及逐合约成功响应均按数据日缓存，
+同日补跑默认复用；需要重新请求时加 `--force`。
 
 ### 4 小时看板
 

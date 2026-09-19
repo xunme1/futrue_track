@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 
 from backend.core.config import DATA_DIR, load_config
+from backend.pipeline.report_store import atomic_json
 
 INDEX_SYMBOLS = {"IF", "IC", "IH", "IM"}  # 股指 rank=2/3 需 rule=1 或 rule=2
 
@@ -33,10 +34,13 @@ def _login():
     return rqdatac
 
 
-def list_symbols(rq):
-    """全市场期货品种代码（剔除伪主连等含 '_' 符号）。"""
-    df = rq.all_instruments(type="Future", market="cn")
-    syms = sorted({s for s in df["underlying_symbol"].unique() if "_" not in str(s)})
+def list_symbols(rq, date=None):
+    """指定日期的全市场活跃期货品种（剔除伪主连等含 '_' 符号）。"""
+    kwargs = {"type": "Future", "market": "cn"}
+    if date:
+        kwargs["date"] = date
+    df = rq.all_instruments(**kwargs)
+    syms = sorted({str(s) for s in df["underlying_symbol"].unique() if "_" not in str(s)})
     return syms
 
 
@@ -44,7 +48,7 @@ def _dominant(rq, symbol, date, rule, rank):
     d = rq.futures.get_dominant(symbol, date, date, rule=rule, rank=rank)
     if d is None or len(d) == 0:
         return None
-    return d.iloc[0]
+    return str(d.iloc[0])
 
 
 def fetch_all(rq, symbols, date):
@@ -70,28 +74,42 @@ def fetch_all(rq, symbols, date):
     return rows
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--date", help="交易日期 YYYYMMDD（默认当天）")
-    args = ap.parse_args(argv)
-    date = args.date or datetime.now().strftime("%Y%m%d")
+def load_or_fetch(date, force=False):
+    """Return the dominant/sub-dominant map for *date*, using the daily cache.
 
+    This helper is shared by the Goldman contract-position pipeline.  The
+    cache format deliberately remains the original list of
+    ``{symbol, main, sub}`` objects so existing cached files stay usable.
+    """
     out_dir = DATA_DIR / "seat"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_json = out_dir / f"dominant_{date}.json"
-    if out_json.exists():
+    if out_json.exists() and not force:
         rows = json.loads(out_json.read_text(encoding="utf-8"))
         print(f"缓存命中: {out_json} ({len(rows)} 个品种)，跳过 API 请求")
-        return
+        return rows, out_json
 
     rq = _login()
-    symbols = list_symbols(rq)
+    symbols = list_symbols(rq, date)
     print(f"枚举到 {len(symbols)} 个品种，开始抓取 {date} 主力/次主力…\n")
     rows = fetch_all(rq, symbols, date)
     if not rows:
-        raise SystemExit("未取到任何品种数据，退出")
-    out_json.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+        raise RuntimeError("未取到任何品种的主力/次主力合约")
+    atomic_json(out_json, rows)
     print(f"\n已保存 {out_json} ({len(rows)} 个品种)")
+    return rows, out_json
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--date", help="交易日期 YYYYMMDD（默认当天）")
+    ap.add_argument("--force", action="store_true", help="忽略当日缓存，重新请求")
+    args = ap.parse_args(argv)
+    date = args.date or datetime.now().strftime("%Y%m%d")
+    try:
+        load_or_fetch(date, force=args.force)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

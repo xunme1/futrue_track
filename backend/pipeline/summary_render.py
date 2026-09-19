@@ -14,6 +14,8 @@ docs/summary_contract.md 撰写；缺字段时以规则化模板兜底），渲�
     python -m backend.pipeline.summary_render --date 2026-09-15
 """
 import argparse
+import base64
+import hashlib
 import html
 import json
 from datetime import datetime, timedelta
@@ -25,6 +27,7 @@ from backend.pipeline.report_store import RULES_VERSION, atomic_json, atomic_tex
 REPORTS_DIR = DATA_DIR / "reports"
 SCAN_DIR = REPORTS_DIR / "scan"
 NARRATIVE_DIR = REPORTS_DIR / "narrative"
+SEAT_DIR = DATA_DIR / "seat"
 
 DASHBOARD_URL = "http://110.42.220.207:8000/"
 
@@ -504,6 +507,60 @@ def s9_radar(f, notes):
     return _section(9, "动量排名雷达 · 新贵与掉队（补充信号 👀）", "".join(parts), notes.get('9'))
 
 
+def load_goldman_appendix(data_date, directory=None):
+    """Load a complete same-day Goldman chart bundle for single-file embedding."""
+    tag = str(data_date).replace('-', '')
+    root = Path(directory) if directory is not None else SEAT_DIR
+    json_path = root / f'goldman_contract_positions_{tag}.json'
+    long_path = root / f'goldman_contract_long_{tag}.png'
+    short_path = root / f'goldman_contract_short_{tag}.png'
+    if not all(path.exists() for path in (json_path, long_path, short_path)):
+        return None
+    try:
+        metadata = json.loads(json_path.read_text(encoding='utf-8'))
+        if metadata.get('date') != tag:
+            return None
+        long_bytes, short_bytes = long_path.read_bytes(), short_path.read_bytes()
+        if not long_bytes or not short_bytes:
+            return None
+    except (OSError, ValueError, TypeError):
+        return None
+    return {
+        'date': tag,
+        'prev_date': metadata.get('prev_date'),
+        'member': metadata.get('member'),
+        'coverage': metadata.get('coverage') or {},
+        'data_hash': digest(metadata),
+        'long_image_hash': hashlib.sha256(long_bytes).hexdigest(),
+        'short_image_hash': hashlib.sha256(short_bytes).hexdigest(),
+        'long_data_uri': 'data:image/png;base64,' + base64.b64encode(long_bytes).decode('ascii'),
+        'short_data_uri': 'data:image/png;base64,' + base64.b64encode(short_bytes).decode('ascii'),
+    }
+
+
+def render_goldman_appendix(appendix):
+    if not appendix:
+        return ''
+    coverage = appendix.get('coverage') or {}
+    caption = (
+        f"数据日 {_esc(appendix.get('date'))}，对比 {_esc(appendix.get('prev_date'))}；"
+        f"动态主次合约品种 {coverage.get('dominant_varieties', '—')} 个，"
+        f"主力缺失 {coverage.get('main_missing', '—')} 个，"
+        f"次主力缺失 {coverage.get('sub_missing', '—')} 个。"
+    )
+    return (
+        '<div class="card goldman-appendix">'
+        '<h2><span>附录 · 高盛主次合约净持仓追踪</span></h2>'
+        f'<p>{caption}</p>'
+        '<h3>主力合约净多排名</h3>'
+        f'<img src="{appendix["long_data_uri"]}" alt="高盛主次合约净多持仓排名图">'
+        '<h3>主力合约净空排名</h3>'
+        f'<img src="{appendix["short_data_uri"]}" alt="高盛主次合约净空持仓排名图">'
+        '<p class="mut">口径为交易所会员持仓前20名披露数据；未披露不代表真实持仓为零。</p>'
+        '</div>'
+    )
+
+
 def _sc(r):
     return (r or {}).get('score') or 0
 
@@ -616,6 +673,9 @@ CSS = """
   .oplist li:last-child{border-bottom:none}
   .oplist li::before{content:counter(o);position:absolute;left:0;top:9px;width:24px;height:24px;border-radius:7px;background:var(--navy);color:#fff;font-size:12.5px;font-weight:800;display:flex;align-items:center;justify-content:center}
 
+  .goldman-appendix img{display:block;width:100%;height:auto;margin:10px auto 20px;border-radius:10px;background:#0e1e33}
+  .goldman-appendix h3{margin-top:18px}
+
   footer{margin-top:22px;padding:14px 16px;background:#eef1f6;border-radius:12px;font-size:12.6px;color:var(--ink3);line-height:1.7}
 
   @media(max-width:820px){
@@ -638,7 +698,7 @@ def render_footer(f):
             f"数据基准 {_esc(f['data_date'])}，对比 {_esc(f['prev_date'])}。</footer>")
 
 
-def render_html(f, narrative, report_date=None) -> str:
+def render_html(f, narrative, report_date=None, goldman_appendix=None) -> str:
     if f.get('rules_version') != RULES_VERSION:
         raise ValueError('扫描规则版本过旧，请先重新运行 scan_report，再按新事实撰写叙事')
     report_date = validate_report_date(f, report_date or next_report_date(f))
@@ -659,6 +719,7 @@ def render_html(f, narrative, report_date=None) -> str:
         s7_pressure(f, notes),
         s8_tips(f, narrative, report_date),
         s9_radar(f, notes),
+        render_goldman_appendix(goldman_appendix),
         render_footer(f),
     ])
     return f"""<!DOCTYPE html>
@@ -704,19 +765,54 @@ def validate_narrative(facts, narrative, report_date):
                 text(value)
 
 
-def publish_report(facts, narrative=None, report_date=None, output_dir=None):
+def publish_report(facts, narrative=None, report_date=None, output_dir=None,
+                   goldman_appendix=None):
     if facts.get('scan_version') != 2 or not facts.get('input_hash'):
         raise ValueError('请先用新版 scan_report 重新生成事实')
     root = Path(output_dir) if output_dir is not None else REPORTS_DIR
     day = validate_report_date(facts, report_date or next_report_date(facts))
-    body = render_html(facts, narrative, day)
+    appendix = goldman_appendix
+    if appendix is None and output_dir is None:
+        appendix = load_goldman_appendix(facts['data_date'])
+    body = render_html(facts, narrative, day, appendix)
     # 单文件原子替换，最后发布同批成品记录；API只读取归档副本，不再猜测数据日。
     atomic_text(root / f'daily_summary_{day}.html', body)
-    atomic_json(root / f'daily_summary_{day}.json', {
+    record = {
         'report_date': day, 'data_date': facts['data_date'], 'input_hash': facts['input_hash'],
         'html_hash': digest(body), 'facts': facts, 'narrative': narrative,
-        'one_liner': (narrative or {}).get('one_liner') or fallback_one_liner(facts, fallback_tone(facts))})
+        'one_liner': (narrative or {}).get('one_liner') or fallback_one_liner(facts, fallback_tone(facts))}
+    if appendix:
+        record['addons'] = {'goldman_contract_positions': {
+            key: value for key, value in appendix.items() if not key.endswith('_data_uri')
+        }}
+    atomic_json(root / f'daily_summary_{day}.json', record)
     return root / f'daily_summary_{day}.html'
+
+
+def rerender_report_for_data_date(data_date, reports_dir=None):
+    """Re-render an already-published report while preserving its bound inputs.
+
+    The seat job runs after the ordinary report.  Reading the archived record,
+    rather than today's mutable scan/narrative files, preserves a custom report
+    date and the exact facts/narrative that were previously published.
+    """
+    root = Path(reports_dir) if reports_dir is not None else REPORTS_DIR
+    candidates = []
+    for path in sorted(root.glob('daily_summary_*.json'), reverse=True):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            continue
+        if record.get('data_date') == data_date and isinstance(record.get('facts'), dict):
+            candidates.append(record)
+    if not candidates:
+        return None
+    record = candidates[0]
+    appendix = load_goldman_appendix(data_date)
+    return publish_report(
+        record['facts'], record.get('narrative'), record.get('report_date'), output_dir=root,
+        goldman_appendix=appendix or {},
+    )
 
 
 def main():
