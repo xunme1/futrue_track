@@ -55,27 +55,7 @@ class SeatFetchTests(unittest.TestCase):
         ])
         self.assertEqual([row["symbol"] for row in rows], ["AO", "M"])
 
-    def test_finoview_is_preferred_without_rq_mixing(self):
-        def fino(symbol, start, end, fields):
-            return {"code": 1, "data": {"data": [{
-                "trade_date": end, "member_name": "高盛期货",
-                "total_long": 10, "total_short": 2,
-            }]}}
-
-        class FailRQ:
-            class futures:
-                @staticmethod
-                def get_member_rank(*args, **kwargs):
-                    raise AssertionError("RiceQuant should not be called")
-
-        rows, meta = seat_fetch.fetch_symbol("M", "20260901", "20260918", fino, FailRQ())
-        self.assertEqual(meta["source"], "finoview")
-        self.assertEqual({row["source"] for row in rows}, {"finoview"})
-
-    def test_ricequant_replaces_entire_symbol_when_finoview_unavailable(self):
-        def fino(*args):
-            return {"code": 501, "data": {"data": []}}
-
+    def test_ricequant_is_the_only_source(self):
         class Futures:
             @staticmethod
             def get_member_rank(symbol, rank_by, start_date, end_date):
@@ -87,39 +67,57 @@ class SeatFetchTests(unittest.TestCase):
         class RQ:
             futures = Futures()
 
-        rows, meta = seat_fetch.fetch_symbol("AO", "20260901", "20260918", fino, RQ())
+        rows, meta = seat_fetch.fetch_symbol("AO", "20260901", "20260918", RQ())
         self.assertEqual(meta["source"], "ricequant")
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["total_long"], rows[0]["total_short"]), (20, 5))
 
+    def test_daike_suffix_is_normalized_to_company_name(self):
+        class Futures:
+            @staticmethod
+            def get_member_rank(symbol, rank_by, start_date, end_date):
+                return pd.DataFrame([{
+                    "trading_date": "2026-09-18", "member_name": "徽商期货（代客）",
+                    "volume": 7, "volume_change": 1,
+                }]).set_index("trading_date")
+
+        class RQ:
+            futures = Futures()
+
+        rows, meta = seat_fetch.fetch_symbol("SA", "20260901", "20260918", RQ())
+        self.assertEqual(meta["source"], "ricequant")
+        self.assertEqual({row["member_name"] for row in rows}, {"徽商期货"})
+
     def test_per_symbol_cache_skips_second_request(self):
         calls = []
 
-        def fino(symbol, start, end, fields):
-            calls.append(symbol)
-            return {"code": 1, "data": {"data": [{
-                "trade_date": end, "member_name": "高盛期货",
-                "total_long": 1, "total_short": 0,
-            }]}}
+        class Futures:
+            @staticmethod
+            def get_member_rank(symbol, rank_by, start_date, end_date):
+                calls.append((symbol, rank_by))
+                return pd.DataFrame([{
+                    "trading_date": "2026-09-18", "member_name": "高盛期货",
+                    "volume": 1, "volume_change": 0,
+                }]).set_index("trading_date")
+
+        class RQ:
+            futures = Futures()
 
         with tempfile.TemporaryDirectory() as tmp:
             for _ in range(2):
                 seat_fetch.fetch_all(
                     "20260901", "20260918", symbols=["M"], directory=tmp,
-                    fino_query=fino, sleep_sec=0,
+                    rq=RQ(), sleep_sec=0,
                 )
-        self.assertEqual(calls, ["M"])
+        self.assertEqual(sorted(set(calls)), [("M", "long"), ("M", "short")])
 
     def test_failed_symbol_is_retried_instead_of_cached(self):
         calls = []
 
-        def fino(symbol, start, end, fields):
-            calls.append(symbol)
-            return {"code": 501, "data": {"data": []}}
-
         class Futures:
             @staticmethod
-            def get_member_rank(*args, **kwargs):
+            def get_member_rank(symbol, *args, **kwargs):
+                calls.append(symbol)
                 return pd.DataFrame()
 
         class RQ:
@@ -129,10 +127,10 @@ class SeatFetchTests(unittest.TestCase):
             for _ in range(2):
                 seat_fetch.fetch_all(
                     "20260901", "20260918", symbols=["EC"], directory=tmp,
-                    fino_query=fino, rq=RQ(), sleep_sec=0,
+                    rq=RQ(), sleep_sec=0,
                 )
             self.assertFalse((Path(tmp) / "EC.json").exists())
-        self.assertEqual(calls, ["EC", "EC"])
+        self.assertEqual(calls, ["EC", "EC", "EC", "EC"])
 
 
 class SeatFactsTests(unittest.TestCase):
@@ -157,14 +155,41 @@ class SeatFactsTests(unittest.TestCase):
         self.assertEqual(row["history_valid_days"], 12)
         self.assertIsNotNone(row["position_pct_20d"])
 
-    def test_incomplete_previous_day_never_becomes_zero_or_action(self):
+    def test_partial_previous_day_counts_missing_member_as_zero(self):
         facts = self.facts(position_rows(missing_prev_member="永安期货"))
         row = facts["groups"]["major"]["varieties"][0]
         self.assertTrue(row["available"])
-        self.assertIsNone(row["net_prev"])
-        self.assertIsNone(row["net_change"])
-        self.assertIsNone(row["action"])
-        self.assertFalse(row["prev_comparable"])
+        # 昨日永安未披露按零计：净仓=国泰君安+中信期货两家（各 2000-100）
+        self.assertEqual(row["net_prev"], 3800)
+        self.assertEqual(row["prev_missing_members"], ["永安期货"])
+        self.assertTrue(row["prev_partial"])
+        self.assertFalse(row["prev_complete"])
+        self.assertIsNotNone(row["net_change"])
+        self.assertIsNotNone(row["action"])
+
+    def test_partial_today_disclosure_marks_missing_members(self):
+        frame = position_rows()
+        frame = frame[~((frame["trade_date"] == "20260918")
+                        & (frame["member_name"] == "徽商期货"))]
+        facts = self.facts(frame)
+        row = facts["groups"]["retail"]["varieties"][0]
+        self.assertTrue(row["available"])
+        self.assertTrue(row["partial"])
+        self.assertFalse(row["today_complete"])
+        self.assertEqual(row["missing_members"], ["徽商期货"])
+        # 仅东方财富有披露：100 - (900 + 11*80)
+        self.assertEqual(row["net_today"], -1680)
+
+    def test_zero_position_disclosure_counts_as_undisclosed(self):
+        frame = position_rows()
+        mask = ((frame["trade_date"] == "20260918")
+                & (frame["member_name"] == "高盛期货"))
+        frame.loc[mask, "total_long"] = 0
+        frame.loc[mask, "total_short"] = 0
+        facts = self.facts(frame)
+        row = facts["groups"]["goldman"]["varieties"][0]
+        self.assertFalse(row["available"])
+        self.assertIn("无有效披露", row["missing_reason"])
 
     def test_mixed_source_symbol_is_rejected_instead_of_silently_combined(self):
         frame = position_rows()
@@ -284,6 +309,9 @@ class SeatFactsTests(unittest.TestCase):
         self.assertIn("最多同时选择 20 个品种", body)
         self.assertIn("导出 PNG", body)
         self.assertIn("html2canvas", body)
+        self.assertIn("未披露按零计", body)
+        self.assertIn("overviewStrip", body)
+        self.assertIn(".badge.long", body)
 
     def test_publish_archives_matching_html_hash(self):
         facts = self.facts()

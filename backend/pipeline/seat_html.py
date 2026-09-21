@@ -85,23 +85,27 @@ def _percentile(values, current, absolute=False):
 
 
 def _family_snapshot(day_frame, families):
-    """Return a net position only when every member family is disclosed."""
+    """组净仓：已披露成员按实际持仓合计，未披露成员按零计并返回其索引。
+
+    只有零持仓披露（两侧均为 0）视为未披露；全部成员未披露时返回 None。
+    """
     if day_frame.empty:
-        return None, []
-    present, selected = [], []
-    for aliases in families:
-        aliases = set(aliases)
-        part = day_frame[day_frame["member_name"].isin(aliases)]
+        return None, list(range(len(families)))
+    selected, missing = [], []
+    for index, aliases in enumerate(families):
+        part = day_frame[day_frame["member_name"].isin(set(aliases))]
         if part.empty:
-            present.append(False)
+            missing.append(index)
         else:
-            present.append(True)
             selected.append(part)
-    if not all(present):
-        return None, [index for index, value in enumerate(present) if not value]
+    if not selected:
+        return None, missing
     rows = pd.concat(selected, ignore_index=True)
-    net = rows["total_long"].map(_number).sum() - rows["total_short"].map(_number).sum()
-    return float(net), []
+    long_sum = rows["total_long"].map(_number).sum()
+    short_sum = rows["total_short"].map(_number).sum()
+    if not long_sum and not short_sum:
+        return None, missing
+    return float(long_sum - short_sum), missing
 
 
 def _source_for(symbol_frame, symbol, source_manifest):
@@ -177,17 +181,18 @@ def _build_group_row(symbol, name, symbol_frame, spec, dates, trade_date, prev_d
         "available": today is not None,
         "missing_reason": (
             None if today is not None
-            else "组内成员披露不完整" if symbol_frame.shape[0] else "品种数据不可用"
+            else "当日组内成员均无有效披露" if symbol_frame.shape[0] else "品种数据不可用"
         ),
+        "partial": today is not None and bool(missing_today),
         "missing_family_count": len(missing_today),
         "missing_members": missing_today_names,
-        "today_complete": today is not None,
-        "prev_complete": previous is not None,
+        "today_complete": today is not None and not missing_today,
+        "prev_complete": previous is not None and not missing_prev,
+        "prev_partial": previous is not None and bool(missing_prev),
         "prev_missing_members": missing_prev_names,
         "comparison_note": (
             None if previous is not None
-            else "昨日组内成员披露不完整"
-            + (f"：{' / '.join(missing_prev_names)}" if missing_prev_names else "")
+            else "昨日组内成员均无有效披露"
         ),
         "net_today": round(today) if today is not None else None,
         "net_prev": round(previous) if previous is not None else None,
@@ -302,8 +307,10 @@ def build_facts(df, trade_date, prev_date, universe=None, source_manifest=None,
                 group_row.update({
                     "available": False,
                     "missing_reason": "检测到同一品种跨源混合，已拒绝计算",
+                    "partial": False,
                     "today_complete": False,
                     "prev_complete": False,
+                    "prev_partial": False,
                     "net_today": None,
                     "net_prev": None,
                     "net_change": None,
@@ -514,7 +521,7 @@ def _fallback_group_note(facts, group_key):
     )
     names = "、".join(f"{row['name']} {row['symbol']}" for row in rows[:3]) or "无完整披露品种"
     return (
-        f"本组完整披露 {coverage['available']} 个品种，净多 {coverage['long']}、"
+        f"本组有披露 {coverage['available']} 个品种（成员未披露按零计），净多 {coverage['long']}、"
         f"净空 {coverage['short']}；按净仓绝对值靠前的是 {names}。"
         "方向仅描述已披露持仓，不代表后续价格判断。"
     )
@@ -778,6 +785,13 @@ CSS = r"""
 :root{color-scheme:dark;--bg:#0e1e33;--panel:#142a46;--panel2:#18314f;--edge:#294967;--gold:#d9b98a;--text:#eee9df;--muted:#9caec3;--green:#26a67b;--red:#d45858;--track:#334c68;--focus:#8ab4d8}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}button,input,select{font:inherit}button{cursor:pointer}.report{max-width:1180px;margin:0 auto;padding:36px 34px 54px}.eyebrow{color:var(--gold);font-size:12px;font-weight:700;letter-spacing:.14em}.hero{display:flex;justify-content:space-between;gap:24px;border-bottom:1px solid rgba(217,185,138,.55);padding-bottom:24px}.hero h1{font-size:30px;margin:10px 0 8px}.sub,.muted{color:var(--muted)}.date{text-align:right;font-size:20px;font-weight:700}.date small{display:block;font-size:12px;font-weight:400;color:var(--muted);margin-top:7px}.coverage{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:18px 0}.stat{background:var(--panel);border:1px solid var(--edge);padding:12px 14px;border-radius:8px}.stat b{font-size:20px;display:block;margin-top:4px}.narrative{background:linear-gradient(135deg,var(--panel2),var(--panel));border-left:3px solid var(--gold);padding:18px 20px;margin:16px 0 18px;line-height:1.85}.narrative h2{font-size:15px;color:var(--gold);margin:0 0 7px}.risk{font-size:12px;color:var(--muted);margin-top:8px}.toolbar{position:sticky;top:0;z-index:20;background:rgba(14,30,51,.96);backdrop-filter:blur(8px);display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--edge)}.toolbar button,.toolbar select,.toolbar input{border:1px solid var(--edge);background:var(--panel);color:var(--text);border-radius:6px;padding:8px 10px}.toolbar button:hover,.toolbar button:focus-visible{border-color:var(--gold)}.toolbar button.active{background:var(--gold);color:#102038;border-color:var(--gold)}.picker{position:relative}.picker-panel{position:absolute;top:42px;left:0;width:360px;max-height:360px;overflow:auto;background:#10233a;border:1px solid var(--edge);border-radius:8px;padding:10px;box-shadow:0 14px 36px rgba(0,0,0,.35)}.picker-panel[hidden]{display:none}.picker-search{width:100%;margin-bottom:8px}.pick-row{display:flex;align-items:center;gap:8px;padding:6px;border-radius:5px}.pick-row:hover{background:var(--panel)}.pick-row input{accent-color:var(--gold)}.selection-status{font-size:12px;color:var(--muted)}.seat-section{margin-top:20px;background:var(--panel);border:1px solid var(--edge);border-radius:10px;overflow:hidden}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px 20px;background:rgba(255,255,255,.018)}.section-head h2{margin:0;font-size:21px}.section-head p{margin:7px 0 0;color:var(--muted);font-size:12px;line-height:1.7}.counts{white-space:nowrap;color:var(--muted);font-size:12px}.group-note{padding:13px 20px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);line-height:1.75;color:#dbe4ef;font-size:13px}.row-head,.position-row{display:grid;grid-template-columns:170px 175px minmax(310px,1fr) 175px;gap:12px;align-items:center;padding:0 20px}.row-head{height:38px;color:var(--muted);font-size:11px}.position-row{min-height:64px;border-top:1px solid rgba(84,116,145,.26)}.position-row:nth-child(even){background:rgba(255,255,255,.018)}.symbol strong{display:block;font-size:14px}.symbol span,.facts small{color:var(--muted);font-size:11px}.facts{font-variant-numeric:tabular-nums}.facts b{font-size:14px}.tag{display:inline-block;margin-left:5px;padding:2px 5px;border-radius:3px;font-size:10px;background:#29445f;color:#c8d6e5}.tag.fino{color:#b5e6d4}.tag.rq{color:#f2d1a4}.long{color:var(--green)}.short{color:var(--red)}.track svg{width:100%;height:42px;display:block}.market{font-size:12px;font-variant-numeric:tabular-nums}.market div{margin:3px 0}.missing{grid-column:2/5;color:var(--muted);font-size:13px}.empty{padding:28px;text-align:center;color:var(--muted)}details.contracts{border-top:1px solid var(--edge);padding:0 20px 16px}details.contracts summary{padding:14px 0;color:var(--gold);cursor:pointer}.contract-table{width:100%;border-collapse:collapse;font-size:12px}.contract-table th,.contract-table td{padding:8px;border-top:1px solid rgba(84,116,145,.3);text-align:right}.contract-table th:first-child,.contract-table td:first-child{text-align:left}.footer{margin-top:24px;border-top:1px solid rgba(217,185,138,.5);padding-top:18px;color:var(--muted);font-size:11px;line-height:1.8}.export-mode .no-export{display:none!important}.export-mode .toolbar{display:none!important}.export-mode .report{max-width:1180px;padding-top:28px}
 @media(max-width:820px){.report{padding:22px 14px}.hero{display:block}.date{text-align:left;margin-top:14px}.coverage{grid-template-columns:repeat(2,1fr)}.row-head{display:none}.position-row{grid-template-columns:1fr 1fr;padding:12px 14px}.track{grid-column:1/3}.market{text-align:right}.picker-panel{position:fixed;left:12px;right:12px;top:92px;width:auto}.section-head{display:block}.counts{margin-top:8px}}
+.badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700;line-height:1.6}
+.badge.long{background:rgba(38,166,123,.16);color:var(--green)}
+.badge.short{background:rgba(212,88,88,.16);color:var(--red)}
+.badge.flat{background:rgba(156,174,195,.12);color:var(--muted)}
+.overview{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-bottom:2px}
+.overview .ov-item.current{color:var(--gold)}
+.partial-note{font-size:11px;color:var(--muted);margin-top:2px}
 """
 
 
@@ -799,13 +813,18 @@ function trackSvg(row){if(!row.available)return '';
  const xt=x(row.relative_today),xp=x(row.relative_prev),color=row.net_today>=0?'var(--green)':'var(--red)';
  let previous='';if(row.prev_comparable){const dir=xt>=xp?1:-1;const tip=xt-dir*7;previous=`<circle cx="${xp}" cy="21" r="5" fill="var(--panel)" stroke="${color}" stroke-width="2"/><line x1="${xp}" y1="21" x2="${tip}" y2="21" stroke="${color}" stroke-width="3"/><polygon points="${xt},21 ${tip},16 ${tip},26" fill="${color}"/>`}
  return `<svg viewBox="0 0 560 42" role="img" aria-label="${esc(row.name)}近20日净仓相对位置"><line x1="14" y1="21" x2="546" y2="21" stroke="var(--track)" stroke-width="3" stroke-linecap="round"/><line x1="280" y1="8" x2="280" y2="34" stroke="var(--gold)" opacity=".65"/>${previous}<circle cx="${xt}" cy="21" r="6" fill="${color}" stroke="var(--text)" stroke-width="1.2"/><text x="14" y="11" fill="var(--muted)" font-size="9">净空</text><text x="546" y="11" text-anchor="end" fill="var(--muted)" font-size="9">净多</text></svg>`}
-function rowHtml(row){if(!row||!row.available)return `<div class="position-row"><div class="symbol"><strong>${esc(row?.name||row?.symbol||'—')}</strong><span>${esc(row?.symbol||'')} ${row?.source?`<i class="tag ${sourceClass(row.source)}" title="${esc(sourceNote(row))}">${sourceName(row.source)}</i>`:''}</span></div><div class="missing">— / ${esc(row?.missing_reason||'披露不完整')}${row?.missing_members?.length?`：${esc(row.missing_members.join(' / '))}`:''}</div></div>`;
+function badgeCls(text){if(!text)return 'flat';if(/多$/.test(text))return 'long';if(/空$/.test(text))return 'short';return 'flat'}
+function dirBadge(text){return `<span class="badge ${badgeCls(text)}">${esc(text)}</span>`}
+function overviewStrip(symbol,currentKey){return `<div class="overview">`+groupOrder.map(k=>{const r=indexes[k][symbol];const inner=(r&&r.available)?dirBadge(r.direction):'<span class="badge flat">未披露</span>';return `<span class="ov-item${k===currentKey?' current':''}">${facts.groups[k].short_name} ${inner}</span>`}).join('')+`</div>`}
+function rowHtml(row,groupKey){if(!row||!row.available)return `<div class="position-row"><div class="symbol"><strong>${esc(row?.name||row?.symbol||'—')}</strong><span>${esc(row?.symbol||'')} ${row?.source?`<i class="tag ${sourceClass(row.source)}" title="${esc(sourceNote(row))}">${sourceName(row.source)}</i>`:''}</span></div><div class="missing">— / ${esc(row?.missing_reason||'披露不完整')}</div></div>`;
  const cls=row.net_today>=0?'long':'short',m=row.market||{};
- return `<div class="position-row"><div class="symbol"><strong>${esc(row.name)}</strong><span>${esc(row.symbol)} <i class="tag ${sourceClass(row.source)}" title="${esc(sourceNote(row))}">${sourceName(row.source)}</i></span></div><div class="facts"><b class="${cls}">${fmt(row.net_today)} 手</b><small>${esc(row.direction)} · ${esc(row.action||row.comparison_note||'变化未知')} · Δ ${fmt(row.net_change)}</small></div><div class="track">${trackSvg(row)}</div><div class="market"><div>价 ${m.available?fmt(m.price_return_pct)+'%':'—'}</div><div>OI ${m.available?fmt(m.oi_change):'—'} <span class="muted">${esc(m.contract||'')}</span></div></div></div>`}
+ const partialNote=row.partial&&row.missing_members?.length?`<div class="partial-note">未披露按零计：${esc(row.missing_members.join(' / '))}</div>`:'';
+ const action=row.action?dirBadge(row.action):`<span class="muted">${esc(row.comparison_note||'变化未知')}</span>`;
+ return `<div class="position-row"><div class="symbol"><strong>${esc(row.name)}</strong><span>${esc(row.symbol)} <i class="tag ${sourceClass(row.source)}" title="${esc(sourceNote(row))}">${sourceName(row.source)}</i></span></div><div class="facts"><b class="${cls}">${fmt(row.net_today)} 手</b><small>${dirBadge(row.direction)} ${action} · Δ ${fmt(row.net_change)}</small></div><div class="track">${overviewStrip(row.symbol,groupKey)}${trackSvg(row)}${partialNote}</div><div class="market"><div>价 ${m.available?fmt(m.price_return_pct)+'%':'—'}</div><div>OI ${m.available?fmt(m.oi_change):'—'} <span class="muted">${esc(m.contract||'')}</span></div></div></div>`}
 function contractDetails(rows){const block=facts.goldman_contract;if(!block||!Array.isArray(block.varieties))return '';
  const map=Object.fromEntries(block.varieties.map(x=>[x.symbol,x]));const body=rows.map(row=>{const x=map[row.symbol];if(!x)return `<tr><td>${esc(row.name)} ${esc(row.symbol)}</td><td colspan="4">— / 无主次合约披露</td></tr>`;const cell=p=>p&&p.available?`${fmt(p.today)} / Δ ${fmt(p.change)}`:'— / 未披露';return `<tr><td>${esc(row.name)} ${esc(row.symbol)}</td><td>${esc(x.main?.contract||'—')}</td><td>${cell(x.main)}</td><td>${esc(x.sub?.contract||'—')}</td><td>${cell(x.sub)}</td></tr>`}).join('');
  return `<details class="contracts"><summary>主力 / 次主力合约明细（展开）</summary><div class="table-wrap"><table class="contract-table"><thead><tr><th>品种</th><th>主力</th><th>主力净仓 / 变化</th><th>次主力</th><th>次主力净仓 / 变化</th></tr></thead><tbody>${body}</tbody></table></div></details>`}
-function renderGroup(key){const group=facts.groups[key],rows=visibleRows(key),c=group.coverage,note=narrative.group_notes[key];return `<section class="seat-section" id="group-${key}"><div class="section-head"><div><h2>${esc(group.code)} · ${esc(group.name)}</h2><p>${esc(group.members.join(' / '))}</p></div><div class="counts">完整 ${c.available} · 多 ${c.long} / 空 ${c.short} · 今昨日可比 ${c.prev_comparable}</div></div><div class="group-note">${esc(note.text)}</div><div class="row-head"><span>品种 / 来源</span><span>净仓 / 动作</span><span>近20日相对定位</span><span>主力价格 / OI</span></div><div>${rows.length?rows.map(rowHtml).join(''):'<div class="empty">当前没有可展示品种</div>'}</div>${key==='goldman'?contractDetails(rows):''}</section>`}
+function renderGroup(key){const group=facts.groups[key],rows=visibleRows(key),c=group.coverage,note=narrative.group_notes[key];return `<section class="seat-section" id="group-${key}"><div class="section-head"><div><h2>${esc(group.code)} · ${esc(group.name)}</h2><p>${esc(group.members.join(' / '))}</p></div><div class="counts">披露 ${c.available} · 多 ${c.long} / 空 ${c.short} · 今昨日可比 ${c.prev_comparable}</div></div><div class="group-note">${esc(note.text)}</div><div class="row-head"><span>品种 / 来源</span><span>净仓 / 动作</span><span>三席方向 / 近20日相对定位</span><span>主力价格 / OI</span></div><div>${rows.length?rows.map(r=>rowHtml(r,key)).join(''):'<div class="empty">当前没有可展示品种</div>'}</div>${key==='goldman'?contractDetails(rows):''}</section>`}
 function render(){document.getElementById('sections').innerHTML=groupOrder.map(renderGroup).join('');document.querySelectorAll('[data-limit]').forEach(b=>b.classList.toggle('active',Number(b.dataset.limit)===state.limit&&!state.selected.length));document.getElementById('selection-status').textContent=state.selected.length?`对照模式：已选 ${state.selected.length} / 20`:`默认模式：每组前 ${state.limit}`;renderPicker()}
 function renderPicker(){const q=state.query.trim().toLowerCase();const rows=facts.universe.filter(x=>!q||`${x.symbol} ${x.name}`.toLowerCase().includes(q));document.getElementById('pick-list').innerHTML=rows.map(x=>`<label class="pick-row"><input type="checkbox" value="${esc(x.symbol)}" ${state.selected.includes(x.symbol)?'checked':''}><span>${esc(x.name)} ${esc(x.symbol)}</span></label>`).join('')}
 document.getElementById('picker-toggle').addEventListener('click',()=>{const p=document.getElementById('picker-panel');p.hidden=!p.hidden});
@@ -840,7 +859,7 @@ def render_html(facts, narrative, signals, html2canvas_source):
 <div class="coverage"><div class="stat"><span class="muted">商品品种池</span><b>{len(facts['universe'])}</b></div><div class="stat"><span class="muted">繁微主源</span><b>{fino}</b></div><div class="stat"><span class="muted">米筐补缺</span><b>{rq}</b></div><div class="stat"><span class="muted">不可用/异常</span><b>{missing}</b></div></div>
 <section class="narrative"><h2>今日跨席位观察</h2><div>{html.escape(overall)}</div><div class="risk">{risks}</div></section>
 <div class="toolbar no-export"><div class="picker"><button id="picker-toggle" type="button">选择品种</button><div class="picker-panel" id="picker-panel" hidden><input id="picker-search" class="picker-search" placeholder="搜索名称或代码"><div id="pick-list"></div></div></div><span class="muted">显示</span>{''.join(f'<button type="button" data-limit="{n}">{n}</button>' for n in (5,10,15,20))}<button id="reset" type="button">恢复默认</button><span class="selection-status" id="selection-status" aria-live="polite"></span><button id="download-html" type="button">下载 HTML</button><button id="export-png" type="button">导出 PNG</button></div>
-<div id="sections"></div><footer class="footer">口径：{html.escape(facts['basis'])}。净仓=披露持多量-披露持空量；只有组内全部成员公司进入至少一侧榜单时才计算组净仓。价格与 OI 使用目标日主力合约，并固定同一合约比较今昨日。图中信号是持仓观察，不构成投资建议。</footer></main>
+<div id="sections"></div><footer class="footer">口径：{html.escape(facts['basis'])}。净仓=已披露成员持多量-持空量；组内未披露成员按零计入并在持仓条下方标注，未披露不代表真实持仓为零。价格与 OI 使用目标日主力合约，并固定同一合约比较今昨日。图中信号是持仓观察，不构成投资建议。</footer></main>
 <script id="report-data" type="application/json">{payload}</script><script>{source}</script><script>{JS}</script></body></html>"""
 
 

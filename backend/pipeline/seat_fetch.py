@@ -4,8 +4,8 @@
     python -m backend.pipeline.seat_fetch --start 20260811 --end 20260917
     python -m backend.pipeline.seat_fetch --end 20260918
 
-繁微为主源；目标日不支持或无数据时，整品种历史切换到 RiceQuant。逐品种结果和
-最终 CSV 都会缓存，同日任务可安全重跑。
+数据源统一为 RiceQuant（繁微品种合计口径已弃用）。逐品种结果和最终 CSV
+都会缓存，同日任务可安全重跑。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import pandas as pd
 
 from backend.pipeline.dominant_fetch import load_or_fetch
 from backend.pipeline.report_store import atomic_json
-from backend.pipeline.seat_core import FIELDS, SEAT_DIR, SLEEP_SEC, get_member_rank
+from backend.pipeline.seat_core import SEAT_DIR
 
 
 FINANCIAL_SYMBOLS = {"IF", "IH", "IC", "IM", "T", "TF", "TS", "TL"}
@@ -42,25 +42,6 @@ def _day(value):
     return str(value or "").replace("-", "")[:8]
 
 
-def _finoview_rows(symbol, start_date, end_date, query_fn=get_member_rank):
-    response = query_fn(symbol, start_date, end_date, FIELDS)
-    if not isinstance(response, dict):
-        raise ValueError("繁微返回不是 JSON 对象")
-    rows = ((response.get("data") or {}).get("data") or [])
-    if response.get("code") != 1 or not isinstance(rows, list) or not rows:
-        size = len(rows) if isinstance(rows, list) else "invalid"
-        raise ValueError(f"繁微不可用 code={response.get('code')} rows={size}")
-    if not any(_day(row.get("trade_date")) == end_date for row in rows):
-        raise ValueError("繁微目标日无数据")
-    out = []
-    for row in rows:
-        value = dict(row)
-        value["symbol"] = symbol
-        value["source"] = "finoview"
-        out.append(value)
-    return out
-
-
 def rq_symbol_rows(symbol, start_date, end_date, rq=None):
     """Normalize RiceQuant long/short top-20 boards to the seat CSV shape."""
     if rq is None:
@@ -78,7 +59,10 @@ def rq_symbol_rows(symbol, start_date, end_date, rq=None):
             continue
         for rec in frame.reset_index().to_dict("records"):
             day = _day(rec.get("trading_date"))
+            # 郑商所品种米筐只返回「XX（代客）」形式，去掉后缀归一到公司名
+            # （已验证同品种同日不存在「X」与「X（代客）」并存，无重复计数风险）。
             member = str(rec.get("member_name") or "").strip()
+            member = member.replace("（代客）", "").replace("(代客)", "")
             if not day or not member:
                 continue
             row = merged.setdefault((day, member), {
@@ -102,32 +86,21 @@ def rq_symbol_rows(symbol, start_date, end_date, rq=None):
     return rows
 
 
-def fetch_symbol(symbol, start_date, end_date, fino_query=get_member_rank, rq=None):
-    """Choose exactly one source for a symbol's complete history window."""
-    try:
-        rows = _finoview_rows(symbol, start_date, end_date, fino_query)
-        return rows, {"source": "finoview", "fallback_reason": None, "rows": len(rows)}
-    except Exception as exc:  # noqa: BLE001 - fallback is intentional
-        fino_error = f"{type(exc).__name__}: {exc}"
+def fetch_symbol(symbol, start_date, end_date, rq=None):
+    """Fetch a symbol's complete history window from RiceQuant."""
     try:
         rows = rq_symbol_rows(symbol, start_date, end_date, rq=rq)
-        return rows, {
-            "source": "ricequant",
-            "fallback_reason": fino_error,
-            "rows": len(rows),
-        }
+        return rows, {"source": "ricequant", "rows": len(rows)}
     except Exception as exc:  # noqa: BLE001 - one symbol cannot stop the universe
         return [], {
             "source": None,
-            "fallback_reason": fino_error,
             "error": f"{type(exc).__name__}: {exc}",
             "rows": 0,
         }
 
 
 def fetch_all(start_date, end_date, symbols=None, dominants=None, directory=None,
-              fino_query=get_member_rank, rq=None, sleep_sec=SLEEP_SEC,
-              return_manifest=False, force=False):
+              rq=None, sleep_sec=0, return_manifest=False, force=False):
     """Fetch a dynamic universe with per-symbol source caches."""
     if symbols is None:
         symbols = [
@@ -156,9 +129,7 @@ def fetch_all(start_date, end_date, symbols=None, dominants=None, directory=None
             except (OSError, ValueError, TypeError):
                 rows = None
         if rows is None:
-            rows, meta = fetch_symbol(
-                symbol, start_date, end_date, fino_query=fino_query, rq=rq
-            )
+            rows, meta = fetch_symbol(symbol, start_date, end_date, rq=rq)
             # 只缓存成功产物。限流、网络或临时权限故障必须允许同日重跑时恢复，
             # 不能被一个 source=None 的空响应永久短路。
             if meta.get("source"):
