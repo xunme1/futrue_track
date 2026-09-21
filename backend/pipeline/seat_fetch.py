@@ -1,75 +1,214 @@
 # -*- coding: utf-8 -*-
-"""席位追踪第 1 步：抓取会员持仓数据（繁微 REST API）→ data/seat/seat_data_<end>.csv。
+"""席位追踪第 1 步：动态商品池会员持仓 → data/seat/seat_data_<end>.csv。
 
     python -m backend.pipeline.seat_fetch --start 20260811 --end 20260917
-    python -m backend.pipeline.seat_fetch --end 20260918   # start 默认向前 40 自然日
+    python -m backend.pipeline.seat_fetch --end 20260918
 
-CSV 缓存已存在则直接跳过 API 请求（幂等，可反复重跑）。
+繁微为主源；目标日不支持或无数据时，整品种历史切换到 RiceQuant。逐品种结果和
+最终 CSV 都会缓存，同日任务可安全重跑。
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import json
+from pathlib import Path
 import sys
 import time
 
 import pandas as pd
 
-from backend.pipeline.seat_core import (
-    FIELDS,
-    SEAT_DIR,
-    SLEEP_SEC,
-    SYMBOLS,
-    get_member_rank,
-)
+from backend.pipeline.dominant_fetch import load_or_fetch
+from backend.pipeline.report_store import atomic_json
+from backend.pipeline.seat_core import FIELDS, SEAT_DIR, SLEEP_SEC, get_member_rank
 
 
-def fetch_all(start_date, end_date):
-    rows_all, failed = [], []
-    for i, sym in enumerate(SYMBOLS, 1):
-        try:
-            resp = get_member_rank(sym, start_date, end_date, FIELDS)
-            rows = resp.get("data", {}).get("data", []) or []
-            for r in rows:
-                r["symbol"] = sym
-            rows_all.extend(rows)
-            print(f"[{i:2d}/{len(SYMBOLS)}] {sym:4s} -> {len(rows)} 行")
-            if not rows:
-                failed.append((sym, f"code={resp.get('code')} empty"))
-        except Exception as e:  # noqa: BLE001
-            failed.append((sym, repr(e)))
-            print(f"[{i:2d}/{len(SYMBOLS)}] {sym:4s} -> 失败: {e!r}")
-        time.sleep(SLEEP_SEC)
-    if failed:
-        print("\n异常/空返回品种:", failed)
+FINANCIAL_SYMBOLS = {"IF", "IH", "IC", "IM", "T", "TF", "TS", "TL"}
+
+
+def commodity_universe(end_date, dominants=None):
+    """Return target-day active commodity rows, excluding financial futures."""
+    if dominants is None:
+        dominants, _ = load_or_fetch(end_date)
+    rows = [
+        dict(row) for row in dominants
+        if str(row.get("symbol") or "").upper() not in FINANCIAL_SYMBOLS
+    ]
+    rows.sort(key=lambda row: str(row.get("symbol") or ""))
+    return rows
+
+
+def _day(value):
+    return str(value or "").replace("-", "")[:8]
+
+
+def _finoview_rows(symbol, start_date, end_date, query_fn=get_member_rank):
+    response = query_fn(symbol, start_date, end_date, FIELDS)
+    if not isinstance(response, dict):
+        raise ValueError("繁微返回不是 JSON 对象")
+    rows = ((response.get("data") or {}).get("data") or [])
+    if response.get("code") != 1 or not isinstance(rows, list) or not rows:
+        size = len(rows) if isinstance(rows, list) else "invalid"
+        raise ValueError(f"繁微不可用 code={response.get('code')} rows={size}")
+    if not any(_day(row.get("trade_date")) == end_date for row in rows):
+        raise ValueError("繁微目标日无数据")
+    out = []
+    for row in rows:
+        value = dict(row)
+        value["symbol"] = symbol
+        value["source"] = "finoview"
+        out.append(value)
+    return out
+
+
+def rq_symbol_rows(symbol, start_date, end_date, rq=None):
+    """Normalize RiceQuant long/short top-20 boards to the seat CSV shape."""
+    if rq is None:
+        from backend.pipeline.goldman_contract import _rq
+        rq = _rq()
+    merged = {}
+    for rank_by, value_key, change_key in (
+        ("long", "total_long", "total_long_change"),
+        ("short", "total_short", "total_short_change"),
+    ):
+        frame = rq.futures.get_member_rank(
+            symbol, rank_by=rank_by, start_date=start_date, end_date=end_date
+        )
+        if frame is None or len(frame) == 0:
+            continue
+        for rec in frame.reset_index().to_dict("records"):
+            day = _day(rec.get("trading_date"))
+            member = str(rec.get("member_name") or "").strip()
+            if not day or not member:
+                continue
+            row = merged.setdefault((day, member), {
+                "trade_date": day,
+                "member_name": member,
+                "total_volume": 0,
+                "total_volume_change": 0,
+                "total_long": 0,
+                "total_long_change": 0,
+                "total_short": 0,
+                "total_short_change": 0,
+                "code": symbol,
+                "symbol": symbol,
+                "source": "ricequant",
+            })
+            row[value_key] = int(rec.get("volume") or 0)
+            row[change_key] = int(rec.get("volume_change") or 0)
+    rows = list(merged.values())
+    if not any(row["trade_date"] == end_date for row in rows):
+        raise ValueError("RiceQuant 目标日无品种排名数据")
+    return rows
+
+
+def fetch_symbol(symbol, start_date, end_date, fino_query=get_member_rank, rq=None):
+    """Choose exactly one source for a symbol's complete history window."""
+    try:
+        rows = _finoview_rows(symbol, start_date, end_date, fino_query)
+        return rows, {"source": "finoview", "fallback_reason": None, "rows": len(rows)}
+    except Exception as exc:  # noqa: BLE001 - fallback is intentional
+        fino_error = f"{type(exc).__name__}: {exc}"
+    try:
+        rows = rq_symbol_rows(symbol, start_date, end_date, rq=rq)
+        return rows, {
+            "source": "ricequant",
+            "fallback_reason": fino_error,
+            "rows": len(rows),
+        }
+    except Exception as exc:  # noqa: BLE001 - one symbol cannot stop the universe
+        return [], {
+            "source": None,
+            "fallback_reason": fino_error,
+            "error": f"{type(exc).__name__}: {exc}",
+            "rows": 0,
+        }
+
+
+def fetch_all(start_date, end_date, symbols=None, dominants=None, directory=None,
+              fino_query=get_member_rank, rq=None, sleep_sec=SLEEP_SEC,
+              return_manifest=False, force=False):
+    """Fetch a dynamic universe with per-symbol source caches."""
+    if symbols is None:
+        symbols = [
+            str(row["symbol"]).upper()
+            for row in commodity_universe(end_date, dominants=dominants)
+        ]
+    else:
+        symbols = [str(symbol).upper() for symbol in symbols]
+    cache_root = Path(directory) if directory else SEAT_DIR / "source_cache" / end_date
+    cache_root.mkdir(parents=True, exist_ok=True)
+    rows_all, manifest = [], {}
+    for index, symbol in enumerate(symbols, 1):
+        cache_path = cache_root / f"{symbol}.json"
+        cached = False
+        rows, meta = None, None
+        if cache_path.exists() and not force:
+            try:
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                if (payload.get("symbol") == symbol
+                        and payload.get("start_date") == start_date
+                        and payload.get("end_date") == end_date
+                        and isinstance(payload.get("rows"), list)):
+                    rows = payload["rows"]
+                    meta = payload.get("meta") or {}
+                    cached = True
+            except (OSError, ValueError, TypeError):
+                rows = None
+        if rows is None:
+            rows, meta = fetch_symbol(
+                symbol, start_date, end_date, fino_query=fino_query, rq=rq
+            )
+            # 只缓存成功产物。限流、网络或临时权限故障必须允许同日重跑时恢复，
+            # 不能被一个 source=None 的空响应永久短路。
+            if meta.get("source"):
+                atomic_json(cache_path, {
+                    "symbol": symbol,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "rows": rows,
+                    "meta": meta,
+                })
+        rows_all.extend(rows)
+        manifest[symbol] = dict(meta, cached=cached)
+        source = meta.get("source") or "不可用"
+        suffix = " · 缓存" if cached else ""
+        print(f"[{index:3d}/{len(symbols)}] {symbol:4s} -> {len(rows):5d} 行 · {source}{suffix}")
+        if sleep_sec and not cached and index < len(symbols):
+            time.sleep(sleep_sec)
+    if return_manifest:
+        return rows_all, manifest
     return rows_all
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--start", help="开始日期 YYYYMMDD（默认 end 向前 40 自然日，覆盖近20交易日分位）")
+    ap.add_argument("--start", help="开始日期 YYYYMMDD（默认 end 向前 40 自然日）")
     ap.add_argument("--end", required=True, help="结束日期 YYYYMMDD（决定缓存文件名）")
+    ap.add_argument("--force", action="store_true", help="忽略逐品种源缓存并重新请求")
     args = ap.parse_args(argv)
     end = args.end
     start = args.start or (datetime.strptime(end, "%Y%m%d") - timedelta(days=40)).strftime("%Y%m%d")
 
     SEAT_DIR.mkdir(parents=True, exist_ok=True)
     out_csv = SEAT_DIR / f"seat_data_{end}.csv"
-    if out_csv.exists():
+    source_path = SEAT_DIR / f"seat_sources_{end}.json"
+    if out_csv.exists() and not args.force:
         df = pd.read_csv(out_csv, dtype={"trade_date": str})
         print(f"缓存命中: {out_csv} ({len(df)} 行)，跳过 API 请求")
     else:
-        rows = fetch_all(start, end)
+        rows, manifest = fetch_all(start, end, return_manifest=True, force=args.force)
         if not rows:
             print("未抓到任何数据，退出")
             sys.exit(1)
         df = pd.DataFrame(rows)
         df.to_csv(out_csv, index=False)
+        atomic_json(source_path, manifest)
         print(f"\n已保存 {out_csv} ({len(df)} 行)")
 
     df["trade_date"] = df["trade_date"].astype(str)
     print(f"\ntrade_date 范围: {df['trade_date'].min()} ~ {df['trade_date'].max()}")
-    print(f"覆盖品种数: {df['symbol'].nunique()} / {len(SYMBOLS)}")
+    print(f"覆盖品种数: {df['symbol'].nunique()}")
 
 
 if __name__ == "__main__":

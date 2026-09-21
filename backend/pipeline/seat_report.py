@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""席位追踪第 3 步：持仓详情 JSON + DeepSeek 席位分歧分析。
+"""席位追踪旧版兼容产物：持仓详情 JSON + Markdown 解读。
 
     python -m backend.pipeline.seat_report --date 20260917   # 不传则取 data/seat 最新缓存
 
@@ -33,19 +33,19 @@ from backend.pipeline.seat_core import (
 )
 
 SYSTEM_PROMPT = (
-    "你是商品期货席位持仓分析专家，擅长解读交易所会员持仓排名数据，"
-    "识别散户席位与机构席位的分歧特征并提炼交易参考。输出严格遵守字数要求，不讲废话。"
+    "你是商品期货席位持仓日报编辑，只能复述输入中的持仓事实。必须区分事实、可能解释"
+    "与风险，不得声称任何席位具有固定胜率，不得作确定性价格预测。输出严格遵守字数要求。"
 )
 
 ANALYSIS_RULES = """数据口径与分析规则：
 1. 数据口径：交易所每日公布各品种持买/持卖前 20 名会员，未上榜=持仓小于第 20 名阈值不可知；品种为全合约合计；组为多家公司合计且当日全员在榜（完整口径）。
-2. 席位行为先验（来自公开市场经验）：散户席位（东方财富/徽商）客户以互联网零售为主，惯于逆势抄底摸顶、追涨杀跌，在趋势行情中常作反向指标——散户重仓方向与机构对立时，历史上多为散户亏损收场；机构席位（国君/中信/永安）承载产业与专业资金；高盛为外资自营/QFI 风格，方向持续性较强。
+2. 解读边界：不同席位的方向关系只作为共识、分歧、极值和变化信号观察；不得假定散户必然反向或机构必然正确，不得把会员代客持仓描述成会员自营观点。
 3. 字段说明：net_today/net_prev 为净持仓（手，正=净多负=净空）；direction 为当日方向；action 为当日动作（加多/减多/加空/减空/翻多/翻空）；pos_pct_20d 为当日净持仓在近 20 交易日序列中的分位（0=20日最空极值，1=20日最多极值）。
 4. 分析任务：写 400-500 字中文分析，分四段，不要标题、不要 markdown 标记，直接四段正文：
    第一段：三席位整体多空格局概述（各自净多/净空品种数、重仓品种）；
-   第二段：分歧品种识别——找出席位间方向对立且双方都在加仓的品种（重点：散户 vs 机构/高盛对立），指出谁站在历史胜率高的一侧；
+   第二段：分歧品种识别——找出席位间方向对立且双方都在加仓的品种，只陈述方向与变化，不判断哪一类席位必然正确；
    第三段：极值与翻向信号——pos_pct_20d 接近 0 或 1 的拥挤持仓、当日翻多/翻空品种；
-   第四段：交易参考——2-3 个最值得关注的品种及方向逻辑，附风险提示（前20截断、代客持仓非自营）。
+   第四段：观察清单——2-3 个最值得继续核对的品种及事实依据，附风险提示（前20截断、代客持仓非自营），不得给出确定性交易指令。
 5. 字数硬性要求：全文（四段合计）必须在 400 到 500 字之间。"""
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
@@ -68,17 +68,19 @@ def build_detail(df, trade_date, prev_date):
         for r in rows:
             if r["symbol"] not in full_today:
                 continue  # 完整口径过滤：组内全员当日均在榜才保留
+            previous_complete = r["symbol"] in full_prev
             varieties.append({
                 "symbol": r["symbol"],
                 "name": CN_NAME.get(r["symbol"], r["symbol"]),
                 "net_today": int(r["net_t"]),
-                "net_prev": int(r["net_p"]),
-                "net_change": int(r["net_t"] - r["net_p"]),
+                # 兼容详情也遵守新日报完整性规则：昨日不完整时未知，绝不补零。
+                "net_prev": int(r["net_p"]) if previous_complete else None,
+                "net_change": int(r["net_t"] - r["net_p"]) if previous_complete else None,
                 "direction": r["direction"],
-                "action": r["action"],
+                "action": r["action"] if previous_complete else None,
                 "pos_pct_20d": round(r["pos_pct_20d"], 2),
                 "all_members_in_rank": True,
-                "prev_all_members_in_rank": r["symbol"] in full_prev,
+                "prev_all_members_in_rank": previous_complete,
             })
         members = sorted(m for fam in MEMBER_FAMILIES[code] for m in fam)
         detail["groups"][f"{code}_{gname}"] = {

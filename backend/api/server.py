@@ -201,10 +201,24 @@ def seat_list():
         date = fp.stem.removeprefix("seat_data_")
         if not _SEAT_DATE_RE.fullmatch(date):
             continue
+        report_path = SEAT_DIR / f"seat_report_{date}.json"
+        report = None
+        if report_path.exists():
+            try:
+                value = json.loads(report_path.read_text(encoding="utf-8"))
+                html_path = SEAT_DIR / f"seat_report_{date}.html"
+                if (value.get("data_date") == date and html_path.exists()
+                        and value.get("html_hash") == digest(html_path.read_text(encoding="utf-8"))):
+                    report = value
+            except (OSError, ValueError, TypeError):
+                report = None
         out.append({"date": date,
                     "has_image": (SEAT_DIR / f"seat_direction_{date}.png").exists(),
                     "has_analysis": (SEAT_DIR / f"seat_analysis_{date}.md").exists(),
-                    "has_detail": (SEAT_DIR / f"seat_detail_{date}.json").exists()})
+                    "has_detail": (SEAT_DIR / f"seat_detail_{date}.json").exists(),
+                    "has_html": report is not None,
+                    "summary": report.get("summary") if report else None,
+                    "generated_at": report.get("generated_at") if report else None})
     return out
 
 
@@ -225,6 +239,24 @@ def seat_analysis(date: str):
     if not fp.exists():
         raise HTTPException(status_code=404, detail=f"无 {date} 的席位解读")
     return {"date": date, "markdown": fp.read_text(encoding="utf-8")}
+
+
+@app.get("/api/seat/{date}/html")
+def seat_html(date: str):
+    """某日自包含席位持仓 HTML 日报。"""
+    date = _check_seat_date(date)
+    fp = SEAT_DIR / f"seat_report_{date}.html"
+    record_path = SEAT_DIR / f"seat_report_{date}.json"
+    if not fp.exists() or not record_path.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的席位 HTML 日报")
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        body = fp.read_text(encoding="utf-8")
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404, detail="席位日报归档损坏") from exc
+    if record.get("data_date") != date or record.get("html_hash") != digest(body):
+        raise HTTPException(status_code=404, detail="席位日报归档校验失败")
+    return FileResponse(fp, media_type="text/html")
 
 
 # 静态前端（放在最后，避免覆盖 /api 路由）

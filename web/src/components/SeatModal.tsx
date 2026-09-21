@@ -23,8 +23,7 @@ function AnalysisBlock({ markdown }: { markdown: string }) {
 }
 
 /**
- * 席位追踪弹窗：左侧归档列表，右侧为当日 AI 解读 + 席位方向图
- * （产物由 backend.pipeline.seat_daily 生成，/api/seat/* 提供）。
+ * 席位追踪弹窗：新归档优先显示自包含 HTML，旧归档回退 AI 解读 + 方向图。
  */
 export default function SeatModal({ open, onClose }: Props) {
   const [items, setItems] = useState<SeatMeta[]>([])
@@ -39,21 +38,23 @@ export default function SeatModal({ open, onClose }: Props) {
     fetchSeatList()
       .then((list) => {
         setItems(list)
-        setActive((cur) => (cur && list.some((r) => r.date === cur && r.has_image)
+        setActive((cur) => (cur && list.some((r) => r.date === cur && (r.has_html || r.has_image))
           ? cur
-          : list.find((r) => r.has_image)?.date ?? null))
+          : list.find((r) => r.has_html || r.has_image)?.date ?? null))
       })
       .catch((e: Error) => setError(e.message))
   }, [open])
 
   useEffect(() => {
     if (!open || !active) return
+    const meta = items.find((item) => item.date === active)
     setAnalysis(null)
     setAnalysisErr(null)
+    if (meta?.has_html) return
     fetchSeatAnalysis(active)
       .then((r) => setAnalysis(r.markdown))
       .catch((e: Error) => setAnalysisErr(e.message))
-  }, [open, active])
+  }, [open, active, items])
 
   useEffect(() => {
     if (!open) return
@@ -80,10 +81,13 @@ export default function SeatModal({ open, onClose }: Props) {
   return <div className="modal-mask" onClick={onClose}>
     <div className="modal-panel report-panel" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose}>✕ 关闭</button>
-      {activeMeta?.has_image && <a className="modal-download"
+      {activeMeta?.has_html ? <a className="modal-download"
+        href={`/api/seat/${activeMeta.date}/html`}
+        download={`seat_report_${activeMeta.date}.html`}>⬇️ HTML 日报</a>
+        : activeMeta?.has_image && <a className="modal-download"
         href={`/api/seat/${activeMeta.date}/image`}
         download={`seat_direction_${activeMeta.date}.png`}>⬇️ 方向图</a>}
-      {activeMeta?.has_analysis && analysis && <button
+      {!activeMeta?.has_html && activeMeta?.has_analysis && analysis && <button
         className="modal-download modal-download-2"
         onClick={downloadAnalysis}>⬇️ 解读</button>}
       <h2 className="report-title">🪑 席位追踪</h2>
@@ -94,25 +98,29 @@ export default function SeatModal({ open, onClose }: Props) {
           {items.map((r) => (
             <button key={r.date}
               className={`report-item${r.date === active ? ' active' : ''}`}
-              disabled={!r.has_image}
-              title={r.has_image ? '' : '该日暂无方向图产物'}
+              disabled={!r.has_html && !r.has_image}
+              title={r.has_html || r.has_image ? '' : '该日暂无可查看产物'}
               onClick={() => setActive(r.date)}>
               <div className="report-item-date">{fmtDate(r.date)}{r.date === items[0]?.date && <span className="report-tag">最新</span>}</div>
               <div className="report-item-sub">
-                {r.has_analysis ? '图 + AI 解读' : '仅方向图'}
+                {r.has_html ? '交互 HTML 日报' : (r.has_analysis ? '图 + AI 解读' : '仅方向图')}
               </div>
+              {r.summary && <div className="report-item-liner">{r.summary}</div>}
             </button>
           ))}
         </aside>
         <section className="report-viewer seat-viewer">
-          {activeMeta
-            ? <div className="seat-scroll">
+          {activeMeta?.has_html
+            ? <iframe key={activeMeta.date} src={`/api/seat/${activeMeta.date}/html`}
+                title={`席位持仓日报 ${fmtDate(activeMeta.date)}`} />
+            : activeMeta
+              ? <div className="seat-scroll">
                 {analysis && <AnalysisBlock markdown={analysis} />}
                 {analysisErr && activeMeta.has_analysis && <div className="status-msg">解读加载失败:{analysisErr}</div>}
                 <img key={activeMeta.date} src={`/api/seat/${activeMeta.date}/image`}
                   alt={`席位方向图 ${fmtDate(activeMeta.date)}`} />
-              </div>
-            : <div className="status-msg">{items.length ? '请选择左侧日期' : '席位数据生成后在此展示'}</div>}
+                </div>
+              : <div className="status-msg">{items.length ? '请选择左侧日期' : '席位数据生成后在此展示'}</div>}
         </section>
       </div>
     </div>

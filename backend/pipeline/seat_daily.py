@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""席位追踪每日编排：抓数 → 方向图 → 详情/解读 → 高盛主次合约附录。
+"""席位追踪每日编排：抓数 → 兼容产物 → 高盛合约 → HTML 日报。
 
     python -m backend.pipeline.seat_daily                  # 最近工作日
     python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日
@@ -12,17 +12,17 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import json
 import os
 import sys
 
 import pandas as pd
 
 from backend.pipeline.seat_core import SEAT_DIR, prev_trade_date
-from backend.pipeline.seat_fetch import fetch_all
+from backend.pipeline.report_store import atomic_json, atomic_text
+from backend.pipeline.seat_fetch import FINANCIAL_SYMBOLS, fetch_all
 from backend.pipeline.seat_plot import render, setup_font
-from backend.pipeline.seat_report import build_detail, generate_analysis
-
-import json
+from backend.pipeline.seat_report import build_detail
 
 
 def last_weekday(day=None):
@@ -48,10 +48,13 @@ def main(argv=None):
     csv = SEAT_DIR / f"seat_data_{target}.csv"
     if csv.exists():
         df = pd.read_csv(csv, dtype={"trade_date": str})
-        print(f"[1/4] 缓存命中: {csv}（{len(df)} 行）")
+        print(f"[1/5] 缓存命中: {csv}（{len(df)} 行）")
+        source_path = SEAT_DIR / f"seat_sources_{target}.json"
+        source_manifest = (json.loads(source_path.read_text(encoding="utf-8"))
+                           if source_path.exists() else None)
     else:
-        print(f"[1/4] 抓取 {start} ~ {target} 会员持仓（约 {40 * 1.2:.0f}s）…")
-        rows = fetch_all(start, target)
+        print(f"[1/5] 抓取 {start} ~ {target} 动态商品池会员持仓…")
+        rows, source_manifest = fetch_all(start, target, return_manifest=True)
         if not rows:
             sys.exit("[错误] 未抓到任何数据")
         df = pd.DataFrame(rows)
@@ -63,7 +66,8 @@ def main(argv=None):
             print(f"[提示] {csv} 已存在，沿用既有归档")
         else:
             df.to_csv(csv, index=False)
-            print(f"[1/4] 已保存 {csv}（{len(df)} 行）")
+            atomic_json(SEAT_DIR / f"seat_sources_{effective}.json", source_manifest)
+            print(f"[1/5] 已保存 {csv}（{len(df)} 行）")
     df["trade_date"] = df["trade_date"].astype(str)
     trade_date = str(df["trade_date"].max())
     prev = prev_trade_date(df, trade_date)
@@ -74,13 +78,13 @@ def main(argv=None):
     setup_font()
     png = SEAT_DIR / f"seat_direction_{trade_date}.png"
     render(df, trade_date, prev, png)
-    print(f"[2/4] 方向图: {png}")
+    print(f"[2/5] 兼容方向图: {png}")
 
     # ---- 3. 详情 JSON + AI 解读（可缺省）----
     detail = build_detail(df, trade_date, prev)
     json_path = SEAT_DIR / f"seat_detail_{trade_date}.json"
-    json_path.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[3/4] 详情 JSON: {json_path}")
+    atomic_json(json_path, detail)
+    print(f"[3/5] 兼容详情 JSON: {json_path}")
 
     # ---- 4. 高盛主/次合约净持仓图 + 已发布日报原子重渲染（失败不阻断） ----
     try:
@@ -91,27 +95,61 @@ def main(argv=None):
         data_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
         report_path = rerender_report_for_data_date(data_date)
         if report_path:
-            print(f"[4/4] 高盛主次合约附录已写入日报: {report_path}")
+            print(f"[4/5] 高盛主次合约附录已写入技术日报: {report_path}")
         else:
-            print("[4/4] 高盛主次合约图已生成；尚无匹配日报，后续渲染会自动带入")
+            print("[4/5] 高盛主次合约图已生成；尚无匹配技术日报")
     except Exception as exc:  # noqa: BLE001 - 附录失败不能破坏原席位日更
         print(f"[警告] 高盛主次合约附录生成失败: {exc!r}；保留既有日报和席位产物")
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API") or ""
-    if args.no_report or not api_key:
-        print("[跳过] AI 解读未生成（--no-report 或未配置 DEEPSEEK_API_KEY）")
-        return
+    # ---- 5. 自包含 HTML 日报；模型失败时使用确定性模板 ----
     try:
-        text, used_model, n_chars = generate_analysis(detail, api_key)
-    except RuntimeError as exc:
-        print(f"[警告] {exc}；CSV/PNG/JSON 已产出，仅缺 AI 解读")
-        return
-    md_path = SEAT_DIR / f"seat_analysis_{trade_date}.md"
-    md_path.write_text(
-        f"# 席位分歧分析 {trade_date}\n\n"
-        f"数据：{trade_date} 对比 {prev} · 模型：{used_model} · {detail['data_scope']}\n\n{text}\n",
-        encoding="utf-8")
-    print(f"[3/4] AI 解读: {md_path}（{used_model}，{n_chars} 字）")
+        from backend.pipeline.dominant_fetch import load_or_fetch
+        from backend.pipeline.seat_html import (
+            build_facts,
+            build_signals,
+            fallback_narrative,
+            fetch_market_context,
+            generate_narrative,
+            load_goldman_contract,
+            publish_report,
+        )
+
+        dominants, _ = load_or_fetch(trade_date)
+        universe = [row for row in dominants
+                    if str(row.get("symbol") or "").upper() not in FINANCIAL_SYMBOLS]
+        market = fetch_market_context(dominants, trade_date, prev)
+        source_path = SEAT_DIR / f"seat_sources_{trade_date}.json"
+        if source_path.exists():
+            source_manifest = json.loads(source_path.read_text(encoding="utf-8"))
+        facts = build_facts(
+            df, trade_date, prev, universe=universe,
+            source_manifest=source_manifest, market_context=market,
+            goldman_contract=load_goldman_contract(trade_date),
+        )
+        signals = build_signals(facts)
+        api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API") or ""
+        if args.no_report or not api_key:
+            narrative = fallback_narrative(facts, signals, "--no-report 或未配置模型密钥")
+        else:
+            narrative = generate_narrative(facts, signals, api_key)
+        html_path, report_json = publish_report(facts, narrative, signals)
+
+        # 继续提供旧 Markdown 接口，但内容与新 HTML 使用同一份已验证叙事。
+        notes = "\n\n".join(
+            f"## {facts['groups'][key]['name']}\n\n{narrative['group_notes'][key]['text']}"
+            for key in ("goldman", "major", "retail")
+        )
+        risks = "\n".join(f"- {value}" for value in narrative["risk_notes"])
+        md_path = SEAT_DIR / f"seat_analysis_{trade_date}.md"
+        atomic_text(
+            md_path,
+            f"# 席位分歧分析 {trade_date}\n\n{narrative['overall_summary']['text']}\n\n"
+            f"{notes}\n\n## 风险提示\n\n{risks}\n",
+        )
+        print(f"[5/5] HTML 日报: {html_path}")
+        print(f"[5/5] 审计 JSON: {report_json}")
+    except Exception as exc:  # noqa: BLE001 - HTML 附加功能不破坏原日更
+        print(f"[警告] 席位 HTML 日报生成失败: {exc!r}；保留既有席位产物")
 
 
 if __name__ == "__main__":

@@ -32,9 +32,10 @@ future/
 │   │   ├── summary_narrator.py# 可选：调 DeepSeek 按 summary_contract 生成叙事（密钥走 DEEPSEEK_API_KEY）
 │   │   ├── summary_render.py  # 每日总结合成渲染：事实+叙事（可选）→归档 HTML
 │   │   ├── seat_core.py       # 席位追踪共享层：繁微API/三席分组/净持仓计算（移植自 seat_track）
-│   │   ├── seat_fetch.py      # 席位追踪第 1 步：抓会员持仓 → data/seat/seat_data_<日>.csv
+│   │   ├── seat_fetch.py      # 动态商品池会员排名：繁微主源 + 米筐整品种补缺
 │   │   ├── seat_plot.py       # 席位追踪第 2 步：方向图 PNG（哑铃图，跨平台字体探测）
-│   │   ├── seat_report.py     # 席位追踪第 3 步：详情 JSON + DeepSeek 解读（可缺省）
+│   │   ├── seat_report.py     # 旧 PNG/Markdown 兼容产物
+│   │   ├── seat_html.py       # 三席位事实、信号、受约束叙事与自包含 HTML 日报
 │   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（米筐合约级会员持仓 + 主次映射）
 │   │   └── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
 │   └── api/
@@ -115,9 +116,10 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 #    判据体系见资料库《期货看板日报 · 方法论与复制指南》（v4）：农/工分流、回踩 vs 分歧裁决树
 
 # 席位追踪（服务器 refresh_seat.sh 每交易日 18:05 自动执行；需 FINO_APPKEY/FINO_APPSECRET，
-# AI 解读需 DEEPSEEK_API_KEY；产物归档 data/seat/，看板「🪑 席位」入口回看）：
-.venv/Scripts/python -m backend.pipeline.seat_daily                  # 一键：抓数→方向图→详情+解读
+# AI 叙事需 DEEPSEEK_API_KEY；缺失时规则模板兜底，产物归档 data/seat/）：
+.venv/Scripts/python -m backend.pipeline.seat_daily                  # 一键：动态抓数→兼容产物→交互 HTML
 .venv/Scripts/python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日补跑
+.venv/Scripts/python -m backend.pipeline.seat_html --date 20260917 --no-ai  # 用缓存单独补画 HTML
 
 # 高盛主/次合约净持仓附录也可单独补跑；默认各显示前 15，并重渲染匹配的已发布日报：
 .venv/Scripts/python -m backend.pipeline.goldman_contract --date 20260917 --top 15
@@ -142,6 +144,18 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 席位任务完成后会把图片以内嵌方式追加到当日日报末尾。具体合约未披露时显示为空，且不会
 把“未进入交易所前 20 名”解释为真实零持仓。主次映射及逐合约成功响应均按数据日缓存，
 同日补跑默认复用；需要重新请求时加 `--force`。
+
+席位日更另生成 `seat_report_<日>.html/json`。HTML 将数据、样式、脚本和固定版
+`html2canvas 1.4.1` 全部内嵌，离线打开仍可搜索/多选品种、切换 5/10/15/20 行并导出
+当前筛选状态的 PNG 长图；默认每组按当日净仓绝对值展示 10 个品种，手动对照最多 20 个。
+看板优先 iframe 展示 HTML，旧日期继续回退 PNG + Markdown。对应接口为
+`GET /api/seat/{date}/html`；`GET /api/seat` 会返回 `has_html`、摘要和生成时间。
+
+商品池来自目标日米筐主力映射，并排除中金所股指与国债。会员排名按品种固定来源：繁微
+有完整目标日数据时使用繁微，否则该品种整段历史切到米筐，禁止同一品种跨源拼接。高盛
+仅精确统计“高盛期货”（不含乾坤）；组内任一成员当日未披露则不计算当日组净仓，昨日不
+完整时变化和动作显示未知。AI 只组织带 `evidence_id` 的确定性信号，引用、方向或动作校验
+失败会重试一次，仍失败使用规则模板，不影响事实图表发布。
 
 ### 4 小时看板
 

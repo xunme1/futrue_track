@@ -163,6 +163,9 @@ export interface SeatMeta {
   has_image: boolean
   has_analysis: boolean
   has_detail: boolean
+  has_html: boolean
+  summary: string | null
+  generated_at: string | null
 }
 
 export interface SeatAnalysis {
