@@ -141,7 +141,8 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 高盛附录只统计「高盛期货」，按目标日固定的主力/次主力合约比较今昨日净持仓；
 主次映射与合约级会员持仓均取自米筐（繁微接口存在品种错配与覆盖缺口，已全部弃用），
 逐行校验响应合约代码与请求一致。
-产物为 `data/seat/goldman_contract_positions_<日>.json` 与净多、净空两张 PNG；18:05
+产物为 `data/seat/goldman_contract_positions_<日>.json`、净多/净空两张 PNG，以及
+`seat_contract_positions_<日>.json` 三席主次合约事实包；18:05
 席位任务完成后会把图片以内嵌方式追加到当日日报末尾。具体合约未披露时显示为空，且不会
 把“未进入交易所前 20 名”解释为真实零持仓。主次映射及逐合约成功响应均按数据日缓存，
 同日补跑默认复用；需要重新请求时加 `--force`。
@@ -149,6 +150,9 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 席位日更另生成 `seat_report_<日>.html/json`。HTML 将数据、样式、脚本和固定版
 `html2canvas 1.4.1` 全部内嵌，离线打开仍可搜索/多选品种、切换 5/10/15/20 行并导出
 当前筛选状态的 PNG 长图；默认每组按当日净仓绝对值展示 10 个品种，手动对照最多 20 个。
+三个席位区块内另有默认收起的主次合约榜：按主力合约今日净仓切换净多/净空
+Top15，同行展示次主力，并可进一步展开全品种及组内会员贡献明细。不足15项时按实际
+披露数量展示，部分披露会显式标注缺失会员。
 看板优先 iframe 展示 HTML，旧日期继续回退 PNG + Markdown。对应接口为
 `GET /api/seat/{date}/html`；`GET /api/seat` 会返回 `has_html`、摘要和生成时间。
 

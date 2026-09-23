@@ -20,7 +20,7 @@ from backend.pipeline.seat_core import CN_NAME, MEMBER_FAMILIES, SEAT_DIR, prev_
 from backend.pipeline.seat_fetch import FINANCIAL_SYMBOLS
 
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 PROMPT_VERSION = "seat-narrative-v2"
 DEFAULT_LIMIT = 10
 MAX_SELECTION = 20
@@ -276,7 +276,7 @@ def fetch_market_context(dominants, trade_date, prev_date, rq=None):
 
 
 def build_facts(df, trade_date, prev_date, universe=None, source_manifest=None,
-                market_context=None, goldman_contract=None):
+                market_context=None, goldman_contract=None, contract_positions=None):
     """Build the complete auditable fact package used by HTML and the LLM."""
     frame = df.copy()
     frame["trade_date"] = frame["trade_date"].astype(str).str.replace("-", "", regex=False)
@@ -367,6 +367,7 @@ def build_facts(df, trade_date, prev_date, universe=None, source_manifest=None,
         "groups": groups,
         "market_context": market_context,
         "goldman_contract": goldman_contract,
+        "contract_positions": contract_positions,
     }
 
 
@@ -764,6 +765,22 @@ def load_goldman_contract(date, directory=None):
     return value if value.get("date") == date else None
 
 
+def load_contract_positions(date, directory=None):
+    """Load the auditable all-seat main/sub contract bundle for one date."""
+    root = Path(directory) if directory else SEAT_DIR
+    path = root / f"seat_contract_positions_{date}.json"
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    groups = value.get("groups") if isinstance(value, dict) else None
+    if value.get("date") != date or not isinstance(groups, dict):
+        return None
+    return value
+
+
 def load_html2canvas_source(directory=None):
     """Cache and verify html2canvas; reports embed the verified bytes."""
     root = Path(directory) if directory else SEAT_DIR / "vendor"
@@ -792,6 +809,14 @@ CSS = r"""
 .overview{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-bottom:2px}
 .overview .ov-item.current{color:var(--gold)}
 .partial-note{font-size:11px;color:var(--muted);margin-top:2px}
+.contract-panel{border-top:1px solid var(--edge);background:rgba(5,16,30,.17)}
+.contract-panel>summary{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:14px 20px;color:var(--gold);cursor:pointer;font-weight:700;list-style:none}
+.contract-panel>summary::-webkit-details-marker{display:none}.contract-panel>summary:after{content:'展开';font-size:11px;font-weight:400;color:var(--muted)}.contract-panel[open]>summary:after{content:'收起'}
+.contract-summary-meta{font-size:11px;font-weight:400;color:var(--muted);text-align:right}.contract-body{border-top:1px solid rgba(84,116,145,.35);padding:14px 20px 18px}
+.contract-tabs{display:flex;gap:8px;align-items:center;margin-bottom:10px}.contract-tabs button{border:1px solid var(--edge);background:#10233a;color:var(--text);border-radius:6px;padding:7px 13px}.contract-tabs button.active{background:var(--gold);border-color:var(--gold);color:#102038;font-weight:700}.contract-tab-note{margin-left:auto;color:var(--muted);font-size:11px}
+.contract-chart-scroll{overflow-x:auto;border:1px solid rgba(84,116,145,.35);border-radius:7px;background:#132a47}.contract-chart{min-width:940px}.contract-chart svg{display:block;width:100%;height:auto}.contract-chart-empty{padding:42px;text-align:center;color:var(--muted)}
+.contract-detail{margin-top:12px;border:1px solid rgba(84,116,145,.35);border-radius:7px}.contract-detail>summary{padding:11px 13px;color:#dbe4ef;cursor:pointer}.contract-detail-tools{padding:0 12px 10px}.contract-detail-search{width:100%;border:1px solid var(--edge);background:#10233a;color:var(--text);border-radius:6px;padding:8px 10px}.contract-table-wrap{max-height:480px;overflow:auto;border-top:1px solid rgba(84,116,145,.35)}.contract-detail-table{width:100%;min-width:980px;border-collapse:collapse;font-size:11px}.contract-detail-table th{position:sticky;top:0;z-index:2;background:#10233a;color:var(--muted)}.contract-detail-table th,.contract-detail-table td{padding:8px 9px;border-bottom:1px solid rgba(84,116,145,.24);text-align:left;vertical-align:top}.contract-detail-table tr:hover td{background:rgba(255,255,255,.018)}.contract-value{font-variant-numeric:tabular-nums;white-space:nowrap}.member-parts{display:flex;gap:4px 9px;flex-wrap:wrap;color:var(--muted)}.member-parts b{color:#dbe4ef;font-weight:500}.contract-status{white-space:nowrap}.contract-partial{display:inline-block;margin-left:4px;padding:1px 5px;border-radius:3px;color:#e8c58f;background:rgba(217,185,138,.12);font-size:9px}
+@media(max-width:820px){.contract-panel>summary{display:block;padding:13px 14px}.contract-summary-meta{display:block;text-align:left;margin-top:5px}.contract-body{padding:12px 10px}.contract-tabs{flex-wrap:wrap}.contract-tab-note{width:100%;margin-left:0}.contract-chart{min-width:900px}}
 """
 
 
@@ -821,11 +846,21 @@ function rowHtml(row,groupKey){if(!row||!row.available)return `<div class="posit
  const partialNote=row.partial&&row.missing_members?.length?`<div class="partial-note">未披露按零计：${esc(row.missing_members.join(' / '))}</div>`:'';
  const action=row.action?dirBadge(row.action):`<span class="muted">${esc(row.comparison_note||'变化未知')}</span>`;
  return `<div class="position-row"><div class="symbol"><strong>${esc(row.name)}</strong><span>${esc(row.symbol)} <i class="tag ${sourceClass(row.source)}" title="${esc(sourceNote(row))}">${sourceName(row.source)}</i></span></div><div class="facts"><b class="${cls}">${fmt(row.net_today)} 手</b><small>${dirBadge(row.direction)} ${action} · Δ ${fmt(row.net_change)}</small></div><div class="track">${overviewStrip(row.symbol,groupKey)}${trackSvg(row)}${partialNote}</div><div class="market"><div>价 ${m.available?fmt(m.price_return_pct)+'%':'—'}</div><div>OI ${m.available?fmt(m.oi_change):'—'} <span class="muted">${esc(m.contract||'')}</span></div></div></div>`}
-function contractDetails(rows){const block=facts.goldman_contract;if(!block||!Array.isArray(block.varieties))return '';
+const contractState=Object.fromEntries(groupOrder.map(k=>[k,{open:false,side:'long',detailOpen:false,query:''}]));
+function legacyContractDetails(rows){const block=facts.goldman_contract;if(!block||!Array.isArray(block.varieties))return '';
  const map=Object.fromEntries(block.varieties.map(x=>[x.symbol,x]));const body=rows.map(row=>{const x=map[row.symbol];if(!x)return `<tr><td>${esc(row.name)} ${esc(row.symbol)}</td><td colspan="4">— / 无主次合约披露</td></tr>`;const cell=p=>p&&p.available?`${fmt(p.today)} / Δ ${fmt(p.change)}`:'— / 未披露';return `<tr><td>${esc(row.name)} ${esc(row.symbol)}</td><td>${esc(x.main?.contract||'—')}</td><td>${cell(x.main)}</td><td>${esc(x.sub?.contract||'—')}</td><td>${cell(x.sub)}</td></tr>`}).join('');
  return `<details class="contracts"><summary>主力 / 次主力合约明细（展开）</summary><div class="table-wrap"><table class="contract-table"><thead><tr><th>品种</th><th>主力</th><th>主力净仓 / 变化</th><th>次主力</th><th>次主力净仓 / 变化</th></tr></thead><tbody>${body}</tbody></table></div></details>`}
-function renderGroup(key){const group=facts.groups[key],rows=visibleRows(key),c=group.coverage,note=narrative.group_notes[key];return `<section class="seat-section" id="group-${key}"><div class="section-head"><div><h2>${esc(group.code)} · ${esc(group.name)}</h2><p>${esc(group.members.join(' / '))}</p></div><div class="counts">披露 ${c.available} · 多 ${c.long} / 空 ${c.short} · 今昨日可比 ${c.prev_comparable}</div></div><div class="group-note">${esc(note.text)}</div><div class="row-head"><span>品种 / 来源</span><span>净仓 / 动作</span><span>三席方向 / 近20日相对定位</span><span>主力价格 / OI</span></div><div>${rows.length?rows.map(r=>rowHtml(r,key)).join(''):'<div class="empty">当前没有可展示品种</div>'}</div>${key==='goldman'?contractDetails(rows):''}</section>`}
-function render(){document.getElementById('sections').innerHTML=groupOrder.map(renderGroup).join('');document.querySelectorAll('[data-limit]').forEach(b=>b.classList.toggle('active',Number(b.dataset.limit)===state.limit&&!state.selected.length));document.getElementById('selection-status').textContent=state.selected.length?`对照模式：已选 ${state.selected.length} / 20`:`默认模式：每组前 ${state.limit}`;renderPicker()}
+function contractPanel(key,rows){const root=facts.contract_positions,group=root?.groups?.[key];if(!group)return key==='goldman'?legacyContractDetails(rows):'';const c=group.coverage,s=contractState[key];return `<details class="contract-panel" id="contract-panel-${key}" ${s.open?'open':''}><summary><span>主力 / 次主力合约净仓榜</span><span class="contract-summary-meta">主力披露 ${c.main_available}（部分 ${c.main_partial}） · 次主力 ${c.sub_available}（部分 ${c.sub_partial}） · 净多 ${c.long_candidates} / 净空 ${c.short_candidates}</span></summary><div class="contract-body"><div class="contract-tabs"><button type="button" data-contract-side="long" class="${s.side==='long'?'active':''}">净多榜</button><button type="button" data-contract-side="short" class="${s.side==='short'?'active':''}">净空榜</button><span class="contract-tab-note">按主力合约今日净仓排序 · 次主力配对展示</span></div><div class="contract-chart-scroll"><div class="contract-chart" id="contract-chart-${key}"></div></div><details class="contract-detail" id="contract-detail-${key}" ${s.detailOpen?'open':''}><summary>全部品种与会员贡献明细（${group.varieties.length}）</summary><div class="contract-detail-tools"><input class="contract-detail-search" id="contract-search-${key}" value="${esc(s.query)}" placeholder="搜索品种、代码或合约"></div><div class="contract-table-wrap" id="contract-table-${key}"></div></details></div></details>`}
+function chartBar(pos,y,height,zero,x,limit,isMain){if(!pos?.available)return `<text x="${zero}" y="${y+3}" text-anchor="middle" fill="#8fa3bd" font-size="10">— 未披露</text>`;const current=pos.today,previous=pos.previous,xc=x(current);let bars='';if(previous!==null&&previous!==undefined){const xp=x(previous);bars+=`<rect x="${Math.min(zero,xp)}" y="${y-height/2}" width="${Math.max(1,Math.abs(xp-zero))}" height="${height}" fill="#566d88" opacity=".82"/>`;if(current!==previous)bars+=`<rect x="${Math.min(xp,xc)}" y="${y-height*.36}" width="${Math.max(1,Math.abs(xc-xp))}" height="${height*.72}" fill="${current>previous?'#26a67b':'#d45858'}"/>`}else bars+=`<rect x="${Math.min(zero,xc)}" y="${y-height/2}" width="${Math.max(1,Math.abs(xc-zero))}" height="${height}" fill="#566d88" opacity=".58"/>`;const missing=pos.partial?`部分披露，缺 ${pos.missing_members.join(' / ')}`:'已披露';return `<g tabindex="0"><title>${esc(pos.contract||'')}：今 ${fmt(current)}，变化 ${fmt(pos.change)}；${esc(missing)}</title>${bars}<circle cx="${xc}" cy="${y}" r="${isMain?5:3.5}" fill="#d9b98a" stroke="#eee9df" stroke-width=".7"/><text x="${xc+(current>=0?7:-7)}" y="${y+3}" text-anchor="${current>=0?'start':'end'}" fill="${isMain?'#eee9df':'#9caec3'}" font-size="${isMain?10:9}" font-weight="${isMain?'700':'400'}">今 ${fmt(current)} Δ ${fmt(pos.change)}</text></g>`}
+function contractChartSvg(key,side){const root=facts.contract_positions,group=root.groups[key],bySymbol=Object.fromEntries(group.varieties.map(row=>[row.symbol,row])),items=(group.rankings[side]||[]).map(value=>typeof value==='string'?bySymbol[value]:value).filter(Boolean),target=root.top_n||15;if(!items.length)return `<div class="contract-chart-empty">当前无可排名的主力合约净${side==='long'?'多':'空'}持仓</div>`;const width=1120,left=210,right=900,top=44,pair=62,bottom=42,height=top+items.length*pair+bottom;const values=[];items.forEach(item=>['main','sub'].forEach(k=>{const p=item[k];if(p?.available)[p.today,p.previous].forEach(v=>{if(v!==null&&v!==undefined)values.push(Math.abs(v))})}));const limit=Math.max(...values,1)*1.28,x=v=>left+(Math.max(-limit,Math.min(limit,v??0))+limit)/(2*limit)*(right-left),zero=x(0);const ticks=[-limit,-limit/2,0,limit/2,limit];let body=ticks.map(v=>`<line x1="${x(v)}" y1="28" x2="${x(v)}" y2="${height-26}" stroke="${v===0?'#d9b98a':'#294967'}" stroke-width="${v===0?1.2:.7}" opacity=".8"/><text x="${x(v)}" y="${height-8}" text-anchor="middle" fill="#9caec3" font-size="9">${fmt(Math.round(v))}</text>`).join('');items.forEach((item,i)=>{const ym=top+i*pair,ys=ym+24,partial=item.main.partial?' · 部分':'';body+=`<line x1="0" y1="${ym+39}" x2="${width}" y2="${ym+39}" stroke="#294967" stroke-width=".6" opacity=".65"/><text x="198" y="${ym+3}" text-anchor="end" fill="#eee9df" font-size="11">${esc(item.name)} ${esc(item.symbol)} · 主 ${esc(item.main.contract||'—')}${partial}</text><text x="198" y="${ys+3}" text-anchor="end" fill="#9caec3" font-size="10">次 ${esc(item.sub.contract||'—')}</text>${chartBar(item.main,ym,14,zero,x,limit,true)}${chartBar(item.sub,ys,8,zero,x,limit,false)}`});return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(group.name)}主次合约净${side==='long'?'多':'空'}排名"><text x="10" y="19" fill="#d9b98a" font-size="12" font-weight="700">净${side==='long'?'多':'空'} Top${items.length}/${target}</text>${body}</svg>`}
+function memberParts(pos){if(!pos?.members)return '—';return `<div class="member-parts">${pos.members.map(m=>`<span><b>${esc(m.name)}</b> ${m.available?fmt(m.today):'未披露'}</span>`).join('')}</div>`}
+function contractValue(pos){if(!pos?.available)return `<span class="muted">${esc(pos?.missing_reason||'未披露')}</span>`;const partial=pos.partial?`<span class="contract-partial" title="缺 ${esc(pos.missing_members.join(' / '))}">部分</span>`:'';return `<span class="contract-value">${fmt(pos.today)} · Δ ${fmt(pos.change)}</span>${partial}`}
+function contractTableHtml(key){const group=facts.contract_positions.groups[key],q=contractState[key].query.trim().toLowerCase();const rows=group.varieties.filter(row=>!q||`${row.symbol} ${row.name} ${row.main?.contract||''} ${row.sub?.contract||''}`.toLowerCase().includes(q));if(!rows.length)return '<div class="empty">没有匹配的品种</div>';return `<table class="contract-detail-table"><thead><tr><th>品种</th><th>主力合约 / 组净仓</th><th>主力会员贡献</th><th>次主力合约 / 组净仓</th><th>次主力会员贡献</th></tr></thead><tbody>${rows.map(row=>`<tr><td><strong>${esc(row.name)} ${esc(row.symbol)}</strong></td><td><span class="muted">${esc(row.main?.contract||'—')}</span><br>${contractValue(row.main)}</td><td>${memberParts(row.main)}</td><td><span class="muted">${esc(row.sub?.contract||'—')}</span><br>${contractValue(row.sub)}</td><td>${memberParts(row.sub)}</td></tr>`).join('')}</tbody></table>`}
+function renderContractChart(key){const host=document.getElementById(`contract-chart-${key}`);if(!host)return;host.innerHTML=contractChartSvg(key,contractState[key].side);document.querySelectorAll(`#contract-panel-${key} [data-contract-side]`).forEach(button=>button.classList.toggle('active',button.dataset.contractSide===contractState[key].side))}
+function renderContractTable(key){const host=document.getElementById(`contract-table-${key}`);if(host)host.innerHTML=contractTableHtml(key)}
+function bindContractPanels(){if(!facts.contract_positions?.groups)return;groupOrder.forEach(key=>{if(!facts.contract_positions.groups[key])return;const panel=document.getElementById(`contract-panel-${key}`),detail=document.getElementById(`contract-detail-${key}`),search=document.getElementById(`contract-search-${key}`);panel?.addEventListener('toggle',()=>{contractState[key].open=panel.open;if(panel.open)renderContractChart(key)});panel?.querySelectorAll('[data-contract-side]').forEach(button=>button.addEventListener('click',()=>{contractState[key].side=button.dataset.contractSide;renderContractChart(key)}));detail?.addEventListener('toggle',()=>{contractState[key].detailOpen=detail.open;if(detail.open)renderContractTable(key)});search?.addEventListener('input',event=>{contractState[key].query=event.target.value;renderContractTable(key)});if(panel?.open)renderContractChart(key);if(detail?.open)renderContractTable(key)})}
+function renderGroup(key){const group=facts.groups[key],rows=visibleRows(key),c=group.coverage,note=narrative.group_notes[key];return `<section class="seat-section" id="group-${key}"><div class="section-head"><div><h2>${esc(group.code)} · ${esc(group.name)}</h2><p>${esc(group.members.join(' / '))}</p></div><div class="counts">披露 ${c.available} · 多 ${c.long} / 空 ${c.short} · 今昨日可比 ${c.prev_comparable}</div></div><div class="group-note">${esc(note.text)}</div>${contractPanel(key,rows)}<div class="row-head"><span>品种 / 来源</span><span>净仓 / 动作</span><span>三席方向 / 近20日相对定位</span><span>主力价格 / OI</span></div><div>${rows.length?rows.map(r=>rowHtml(r,key)).join(''):'<div class="empty">当前没有可展示品种</div>'}</div></section>`}
+function render(){document.getElementById('sections').innerHTML=groupOrder.map(renderGroup).join('');document.querySelectorAll('[data-limit]').forEach(b=>b.classList.toggle('active',Number(b.dataset.limit)===state.limit&&!state.selected.length));document.getElementById('selection-status').textContent=state.selected.length?`对照模式：已选 ${state.selected.length} / 20`:`默认模式：每组前 ${state.limit}`;renderPicker();bindContractPanels()}
 function renderPicker(){const q=state.query.trim().toLowerCase();const rows=facts.universe.filter(x=>!q||`${x.symbol} ${x.name}`.toLowerCase().includes(q));document.getElementById('pick-list').innerHTML=rows.map(x=>`<label class="pick-row"><input type="checkbox" value="${esc(x.symbol)}" ${state.selected.includes(x.symbol)?'checked':''}><span>${esc(x.name)} ${esc(x.symbol)}</span></label>`).join('')}
 document.getElementById('picker-toggle').addEventListener('click',()=>{const p=document.getElementById('picker-panel');p.hidden=!p.hidden});
 document.getElementById('picker-search').addEventListener('input',e=>{state.query=e.target.value;renderPicker()});
@@ -845,8 +880,8 @@ def render_html(facts, narrative, signals, html2canvas_source):
         ensure_ascii=False, separators=(",", ":"), allow_nan=False,
     ).replace("</", "<\\/")
     coverage = facts["source_coverage"]
-    fino = coverage.get("finoview", 0) + coverage.get("finoview-legacy", 0)
     rq = coverage.get("ricequant", 0)
+    fino = coverage.get("finoview", 0) + coverage.get("finoview-legacy", 0)
     missing = sum(value for key, value in coverage.items()
                   if key not in ("finoview", "finoview-legacy", "ricequant"))
     overall = narrative["overall_summary"]["text"]
@@ -856,7 +891,7 @@ def render_html(facts, narrative, signals, html2canvas_source):
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>席位持仓日报 · {html.escape(facts['data_date'])}</title><style>{CSS}</style></head><body>
 <main class="report" id="report"><header class="hero"><div><div class="eyebrow">BROKER POSITION · HTML DAILY</div><h1>席位持仓 · 每日观察</h1><div class="sub">先核验披露完整性，再读存量、变化、分歧与价格确认</div></div><div class="date">{html.escape(facts['data_date'])}<small>对比 {html.escape(facts['prev_date'])}</small></div></header>
-<div class="coverage"><div class="stat"><span class="muted">商品品种池</span><b>{len(facts['universe'])}</b></div><div class="stat"><span class="muted">繁微主源</span><b>{fino}</b></div><div class="stat"><span class="muted">米筐补缺</span><b>{rq}</b></div><div class="stat"><span class="muted">不可用/异常</span><b>{missing}</b></div></div>
+<div class="coverage"><div class="stat"><span class="muted">商品品种池</span><b>{len(facts['universe'])}</b></div><div class="stat"><span class="muted">米筐数据</span><b>{rq}</b></div><div class="stat"><span class="muted">历史繁微</span><b>{fino}</b></div><div class="stat"><span class="muted">不可用/异常</span><b>{missing}</b></div></div>
 <section class="narrative"><h2>今日跨席位观察</h2><div>{html.escape(overall)}</div><div class="risk">{risks}</div></section>
 <div class="toolbar no-export"><div class="picker"><button id="picker-toggle" type="button">选择品种</button><div class="picker-panel" id="picker-panel" hidden><input id="picker-search" class="picker-search" placeholder="搜索名称或代码"><div id="pick-list"></div></div></div><span class="muted">显示</span>{''.join(f'<button type="button" data-limit="{n}">{n}</button>' for n in (5,10,15,20))}<button id="reset" type="button">恢复默认</button><span class="selection-status" id="selection-status" aria-live="polite"></span><button id="download-html" type="button">下载 HTML</button><button id="export-png" type="button">导出 PNG</button></div>
 <div id="sections"></div><footer class="footer">口径：{html.escape(facts['basis'])}。净仓=已披露成员持多量-持空量；组内未披露成员按零计入并在持仓条下方标注，未披露不代表真实持仓为零。价格与 OI 使用目标日主力合约，并固定同一合约比较今昨日。图中信号是持仓观察，不构成投资建议。</footer></main>
@@ -913,6 +948,7 @@ def main(argv=None):
     facts = build_facts(
         frame, date, previous, universe=universe, source_manifest=source_manifest,
         market_context=market, goldman_contract=load_goldman_contract(date),
+        contract_positions=load_contract_positions(date),
     )
     signals = build_signals(facts)
     api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API")

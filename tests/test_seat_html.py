@@ -10,6 +10,7 @@ from backend.api import server
 from backend.pipeline.report_store import digest
 from backend.pipeline import seat_fetch
 from backend.pipeline import seat_html
+from backend.pipeline import goldman_contract
 
 
 GROUP_MEMBERS = {
@@ -312,6 +313,30 @@ class SeatFactsTests(unittest.TestCase):
         self.assertIn("未披露按零计", body)
         self.assertIn("overviewStrip", body)
         self.assertIn(".badge.long", body)
+
+    def test_html_has_lazy_collapsed_contract_rankings_for_all_groups(self):
+        facts = self.facts()
+        raw_rows = position_rows().to_dict("records")
+        facts["contract_positions"] = goldman_contract.build_seat_contract_bundle(
+            [{"symbol": "MA", "name": "甲醇", "main": "MA2701", "sub": "MA2703"}],
+            {"MA2701": raw_rows, "MA2703": raw_rows}, {},
+            "20260918", "20260917", top_n=15,
+        )
+        signals = seat_html.build_signals(facts)
+        narrative = seat_html.fallback_narrative(facts, signals)
+        body = seat_html.render_html(
+            facts, narrative, signals,
+            "window.html2canvas=async function(){return {toBlob:function(){}}};",
+        )
+        self.assertIn('class="contract-panel"', body)
+        self.assertIn('contractPanel(key,rows)', body)
+        self.assertEqual(body.count('"rankings":'), 3)
+        self.assertIn('data-contract-side="long"', body)
+        self.assertIn('data-contract-side="short"', body)
+        self.assertIn("contractChartSvg", body)
+        self.assertIn("全部品种与会员贡献明细", body)
+        self.assertIn("搜索品种、代码或合约", body)
+        self.assertIn("米筐数据", body)
 
     def test_publish_archives_matching_html_hash(self):
         facts = self.facts()

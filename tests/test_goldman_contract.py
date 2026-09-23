@@ -23,6 +23,41 @@ def row(day, member="高盛期货", long=0, short=0, long_change=None, short_cha
 
 
 class GoldmanContractTests(unittest.TestCase):
+    def test_group_position_normalises_aliases_and_uses_comparable_cohort(self):
+        rows = [
+            row("20260918", member="国泰君安期货（代客）", long=100, short=0,
+                long_change=20, short_change=0),
+            row("20260917", member="国泰君安", long=80, short=0),
+            row("20260918", member="中信期货", long=0, short=50,
+                long_change=0, short_change=10),
+            row("20260917", member="中信期货", long=0, short=40),
+            # 永安仅昨日披露，不应混入今日同口径的对比基线。
+            row("20260917", member="永安期货", long=999, short=0),
+        ]
+        value = gc.build_group_contract_position(
+            rows, "MA2701", "20260918", "20260917",
+            gc.MEMBER_FAMILIES["Z"],
+        )
+        self.assertTrue(value["available"])
+        self.assertTrue(value["partial"])
+        self.assertEqual(value["missing_members"], ["永安期货"])
+        self.assertEqual(value["today"], 50)
+        self.assertEqual(value["previous"], 40)
+        self.assertEqual(value["change"], 10)
+
+    def test_group_position_does_not_double_count_company_aliases(self):
+        rows = [
+            row("20260918", member="国泰君安", long=100),
+            row("20260918", member="国泰君安期货", long=90),
+            row("20260917", member="国泰君安", long=80),
+        ]
+        value = gc.build_group_contract_position(
+            rows, "CU2611", "20260918", "20260917",
+            [["国泰君安", "国泰君安期货"]],
+        )
+        self.assertEqual(value["today"], 100)
+        self.assertEqual(value["previous"], 80)
+
     def test_exact_goldman_match_and_direct_previous_row(self):
         rows = [
             row("20260916", long=100, short=20),
@@ -234,6 +269,35 @@ class GoldmanContractTests(unittest.TestCase):
         self.assertEqual([r["symbol"] for r in bundle["rankings"]["short"]], ["AL"])
         self.assertEqual(bundle["coverage"]["main_missing"], 1)
         self.assertEqual(bundle["coverage"]["sub_missing"], 2)
+
+    def test_all_seat_bundle_ranks_main_and_keeps_member_details(self):
+        dominants = [
+            {"symbol": "M", "main": "M1", "sub": "M2"},
+            {"symbol": "FG", "main": "FG1", "sub": "FG2"},
+            {"symbol": "IF", "main": "IF1", "sub": "IF2"},
+        ]
+        responses = {
+            "M1": [row("20260918", long=100), row("20260917", long=80)],
+            # 次主力方向相反，不影响 M 进入主力净多榜。
+            "M2": [row("20260918", short=30), row("20260917", short=20)],
+            "FG1": [row("20260918", short=120), row("20260917", short=100)],
+            "FG2": [],
+            "IF1": [row("20260918", long=999)],
+            "IF2": [],
+        }
+        bundle = gc.build_seat_contract_bundle(
+            dominants, responses, {}, "20260918", "20260917", top_n=15,
+        )
+        goldman = bundle["groups"]["goldman"]
+        self.assertEqual(bundle["coverage"]["dominant_varieties"], 2)
+        self.assertEqual(goldman["rankings"]["long"], ["M"])
+        self.assertEqual(goldman["rankings"]["short"], ["FG"])
+        m_row = next(row for row in goldman["varieties"] if row["symbol"] == "M")
+        self.assertEqual(m_row["sub"]["today"], -30)
+        self.assertEqual(
+            m_row["main"]["members"][0]["name"],
+            "高盛期货",
+        )
 
     def test_render_chart_writes_png_for_values_and_missing_rows(self):
         item = {

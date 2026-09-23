@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""高盛主力/次主力合约净持仓追踪。
+"""三席主力/次主力合约净持仓追踪（兼容高盛 PNG 附录）。
 
 主次合约与具体合约会员持仓均由 RiceQuant 提供（繁微合约级接口存在品种错配与
-覆盖缺口，仅品种合计口径仍走繁微，见 seat_fetch）。结果按主力合约当日净持仓
-拆成净多、净空两个 Top N 榜单，并生成日报可内嵌的 PNG。
+覆盖缺口）。同一合约响应一次解析高盛、主力、散户三组会员，生成
+``seat_contract_positions_<date>.json`` 供席位 HTML 使用；同时继续生成高盛
+净多、净空 Top N PNG，保持技术日报附录兼容。
 
     python -m backend.pipeline.goldman_contract --date 20260917 --top 15
 
-同日 JSON 与两张 PNG 均存在时直接命中缓存；使用 ``--force`` 可重新抓取。
+同日两份 JSON 与两张 PNG 均存在时直接命中缓存；使用 ``--force`` 可重新抓取。
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from backend.pipeline.dominant_fetch import load_or_fetch
 from backend.pipeline.report_store import atomic_json
 from backend.pipeline.seat_core import (
     CN_NAME,
+    MEMBER_FAMILIES,
     SEAT_DIR,
     prev_trade_date,
     read_seat_csv,
@@ -43,6 +45,12 @@ from backend.core.config import load_config, load_contracts
 
 MEMBER_NAME = "高盛期货"
 DEFAULT_TOP_N = 15
+FINANCIAL_SYMBOLS = {"IF", "IH", "IC", "IM", "T", "TF", "TS", "TL"}
+CONTRACT_GROUPS = {
+    "goldman": {"name": "高盛席位", "short_name": "高盛", "families": MEMBER_FAMILIES["Q"]},
+    "major": {"name": "主力席位", "short_name": "主力", "families": MEMBER_FAMILIES["Z"]},
+    "retail": {"name": "散户席位", "short_name": "散户", "families": MEMBER_FAMILIES["R"]},
+}
 
 _rq_client = None
 
@@ -179,6 +187,153 @@ def _member_position(rows, date):
     }
 
 
+def _normalise_member_name(value):
+    """Normalise exchange/vendor suffixes while preserving company identity."""
+    return str(value or "").strip().replace("（代客）", "").replace("(代客)", "")
+
+
+def _family_position(rows, date, aliases):
+    """Return one company's disclosed position for a contract and date.
+
+    A family can contain vendor aliases for the same company.  If a provider ever
+    emits more than one alias on the same board, use the row with the largest
+    disclosed gross position instead of double counting the company.
+    """
+    aliases = {_normalise_member_name(value) for value in aliases}
+    matched = [
+        row for row in rows
+        if _day(row.get("trade_date")) == date
+        and _normalise_member_name(row.get("member_name")) in aliases
+    ]
+    if not matched:
+        return None
+
+    def gross(row):
+        long_value = _number(row.get("total_long"))
+        short_value = _number(row.get("total_short"))
+        return abs(long_value or 0.0) + abs(short_value or 0.0)
+
+    selected = max(matched, key=gross)
+    long_value = _number(selected.get("total_long"))
+    short_value = _number(selected.get("total_short"))
+    if long_value is None and short_value is None:
+        return None
+    long_value = long_value or 0.0
+    short_value = short_value or 0.0
+    long_change = _number(selected.get("total_long_change"))
+    short_change = _number(selected.get("total_short_change"))
+    reported_change = None
+    if long_change is not None or short_change is not None:
+        reported_change = (long_change or 0.0) - (short_change or 0.0)
+    return {
+        "net": long_value - short_value,
+        "total_long": long_value,
+        "total_short": short_value,
+        "reported_change": reported_change,
+    }
+
+
+def build_group_contract_position(rows, contract, trade_date, prev_date, families):
+    """Aggregate one seat group using a comparable current-member cohort.
+
+    Today's group net is the sum of disclosed member families.  Yesterday's
+    baseline uses those same currently disclosed families, reconstructed from
+    reported changes when a direct previous row is absent.  Missing families are
+    explicit metadata and are never presented as known zero positions.
+    """
+    members = []
+    missing_today = []
+    missing_previous = []
+    current_values = []
+    previous_values = []
+    previous_sources = []
+    for aliases in families:
+        canonical = aliases[0]
+        today = _family_position(rows, trade_date, aliases)
+        direct_previous = _family_position(rows, prev_date, aliases)
+        if today is None:
+            missing_today.append(canonical)
+            members.append({
+                "name": canonical,
+                "available": False,
+                "today": None,
+                "previous": direct_previous["net"] if direct_previous else None,
+                "change": None,
+                "total_long": None,
+                "total_short": None,
+                "previous_source": "previous_row" if direct_previous else None,
+            })
+            continue
+        current_values.append(today)
+        if direct_previous is not None:
+            previous_net = direct_previous["net"]
+            previous_source = "previous_row"
+        elif today["reported_change"] is not None:
+            previous_net = today["net"] - today["reported_change"]
+            previous_source = "reported_change"
+        else:
+            previous_net = None
+            previous_source = None
+            missing_previous.append(canonical)
+        if previous_net is not None:
+            previous_values.append(previous_net)
+            previous_sources.append(previous_source)
+        members.append({
+            "name": canonical,
+            "available": True,
+            "today": today["net"],
+            "previous": previous_net,
+            "change": today["net"] - previous_net if previous_net is not None else None,
+            "total_long": today["total_long"],
+            "total_short": today["total_short"],
+            "previous_source": previous_source,
+        })
+
+    if not current_values:
+        return {
+            "contract": contract,
+            "available": False,
+            "partial": False,
+            "missing_members": [family[0] for family in families],
+            "prev_comparable": False,
+            "prev_missing_members": [],
+            "today": None,
+            "previous": None,
+            "change": None,
+            "total_long": None,
+            "total_short": None,
+            "previous_source": None,
+            "members": members,
+            "missing_reason": "当日组内成员均无披露记录",
+        }
+
+    today_net = sum(value["net"] for value in current_values)
+    previous_complete = len(previous_values) == len(current_values)
+    previous_net = sum(previous_values) if previous_complete else None
+    if not previous_sources:
+        previous_source = None
+    elif all(value == "previous_row" for value in previous_sources):
+        previous_source = "previous_row"
+    else:
+        previous_source = "reported_change"
+    return {
+        "contract": contract,
+        "available": True,
+        "partial": bool(missing_today),
+        "missing_members": missing_today,
+        "prev_comparable": previous_complete,
+        "prev_missing_members": missing_previous,
+        "today": today_net,
+        "previous": previous_net,
+        "change": today_net - previous_net if previous_net is not None else None,
+        "total_long": sum(value["total_long"] for value in current_values),
+        "total_short": sum(value["total_short"] for value in current_values),
+        "previous_source": previous_source,
+        "members": members,
+        "missing_reason": None,
+    }
+
+
 def build_contract_position(rows, contract, trade_date, prev_date):
     """Build today/previous net position for one fixed contract.
 
@@ -241,6 +396,13 @@ def _response_rows(response, contract=None):
     return rows
 
 
+def _contract_cache_path(cache_root, contract):
+    """Return the stable legacy cache path shared by all seat groups."""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", str(contract)).strip("._") or "contract"
+    suffix = hashlib.sha256(str(contract).encode("utf-8")).hexdigest()[:10]
+    return Path(cache_root) / f"{stem}_{suffix}.json"
+
+
 def fetch_contracts(dominants, trade_date, prev_date, query_fn=rq_member_rank,
                     sleep_sec=0, cache_dir=None, force=False):
     """Fetch every unique main/sub contract once; isolate individual failures."""
@@ -262,10 +424,7 @@ def fetch_contracts(dominants, trade_date, prev_date, query_fn=rq_member_rank,
         try:
             cache_path = None
             if cache_root is not None:
-                # Keep filenames readable while making unexpected contract strings safe.
-                stem = re.sub(r"[^A-Za-z0-9._-]+", "_", str(contract)).strip("._") or "contract"
-                suffix = hashlib.sha256(str(contract).encode("utf-8")).hexdigest()[:10]
-                cache_path = cache_root / f"{stem}_{suffix}.json"
+                cache_path = _contract_cache_path(cache_root, contract)
             response = None
             if cache_path is not None and cache_path.exists() and not force:
                 try:
@@ -306,6 +465,25 @@ def fetch_contracts(dominants, trade_date, prev_date, query_fn=rq_member_rank,
     if contracts and successful_requests == 0:
         raise RuntimeError("所有具体合约的会员持仓请求均失败")
     return fetched, errors, len(contracts), successful_requests
+
+
+def load_contract_responses(dominants, cache_dir):
+    """Load validated raw contract responses retained by the Goldman pipeline."""
+    responses = {}
+    for dominant in dominants:
+        for key in ("main", "sub"):
+            contract = dominant.get(key)
+            if not contract or contract in responses:
+                continue
+            path = _contract_cache_path(cache_dir, contract)
+            if not path.exists():
+                continue
+            try:
+                response = json.loads(path.read_text(encoding="utf-8"))
+                responses[contract] = _response_rows(response, contract)
+            except (OSError, ValueError, TypeError):
+                continue
+    return responses
 
 
 def _variety_names():
@@ -396,6 +574,116 @@ def build_bundle(dominants, fetched, errors, trade_date, prev_date, top_n):
         "errors": errors,
         "varieties": varieties,
         "rankings": {"long": long_rank, "short": short_rank},
+    }
+
+
+def build_seat_contract_bundle(dominants, responses, errors, trade_date, prev_date,
+                               top_n=DEFAULT_TOP_N):
+    """Build main/sub contract facts and rankings for all three seat groups."""
+    names = _variety_names()
+    commodities = [
+        row for row in dominants
+        if str(row.get("symbol") or "").upper() not in FINANCIAL_SYMBOLS
+    ]
+    groups = {}
+    for group_key, spec in CONTRACT_GROUPS.items():
+        varieties = []
+        for dominant in commodities:
+            symbol = str(dominant.get("symbol") or "").upper()
+            positions = {}
+            for contract_key in ("main", "sub"):
+                contract = dominant.get(contract_key)
+                rows = responses.get(contract) if contract else None
+                if rows is None:
+                    positions[contract_key] = {
+                        "contract": contract,
+                        "available": False,
+                        "partial": False,
+                        "missing_members": [family[0] for family in spec["families"]],
+                        "prev_comparable": False,
+                        "prev_missing_members": [],
+                        "today": None,
+                        "previous": None,
+                        "change": None,
+                        "total_long": None,
+                        "total_short": None,
+                        "previous_source": None,
+                        "members": [{
+                            "name": family[0], "available": False, "today": None,
+                            "previous": None, "change": None, "total_long": None,
+                            "total_short": None, "previous_source": None,
+                        } for family in spec["families"]],
+                        "missing_reason": (
+                            "无次主力合约" if contract_key == "sub" and not contract
+                            else errors.get(contract, "合约响应不可用")
+                        ),
+                    }
+                else:
+                    positions[contract_key] = build_group_contract_position(
+                        rows, contract, trade_date, prev_date, spec["families"]
+                    )
+            varieties.append({
+                "symbol": symbol,
+                "name": dominant.get("name") or names.get(symbol, symbol),
+                "main": positions["main"],
+                "sub": positions["sub"],
+            })
+
+        ranked = [row for row in varieties if row["main"]["available"]]
+        long_candidates = sorted(
+            (row for row in ranked if row["main"]["today"] > 0),
+            key=lambda row: row["main"]["today"], reverse=True,
+        )
+        short_candidates = sorted(
+            (row for row in ranked if row["main"]["today"] < 0),
+            key=lambda row: abs(row["main"]["today"]), reverse=True,
+        )
+        groups[group_key] = {
+            "name": spec["name"],
+            "short_name": spec["short_name"],
+            "members": [family[0] for family in spec["families"]],
+            "coverage": {
+                "varieties": len(varieties),
+                "main_available": sum(row["main"]["available"] for row in varieties),
+                "main_partial": sum(
+                    row["main"]["available"] and row["main"]["partial"]
+                    for row in varieties
+                ),
+                "sub_available": sum(row["sub"]["available"] for row in varieties),
+                "sub_partial": sum(
+                    row["sub"]["available"] and row["sub"]["partial"]
+                    for row in varieties
+                ),
+                "long_candidates": len(long_candidates),
+                "short_candidates": len(short_candidates),
+            },
+            "varieties": varieties,
+            "rankings": {
+                # Store references instead of duplicated full rows; the HTML maps
+                # them back through ``varieties`` when a folded chart is opened.
+                "long": [row["symbol"] for row in long_candidates[:top_n]],
+                "short": [row["symbol"] for row in short_candidates[:top_n]],
+            },
+        }
+    requested = {
+        row.get(key) for row in commodities for key in ("main", "sub") if row.get(key)
+    }
+    return {
+        "schema_version": 1,
+        "date": trade_date,
+        "prev_date": prev_date,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "basis": "交易所会员持仓前20名披露口径；未披露不代表真实持仓为零",
+        "dominant_source": "RiceQuant get_dominant rank=1/2",
+        "top_n": top_n,
+        "coverage": {
+            "dominant_varieties": len(commodities),
+            "requested_contracts": len(requested),
+            "cached_responses": sum(contract in responses for contract in requested),
+            "request_errors": sum(contract in errors for contract in requested),
+        },
+        "errors": {key: value for key, value in errors.items() if key in requested},
+        "groups": groups,
     }
 
 
@@ -519,6 +807,7 @@ def output_paths(trade_date, directory=None):
     root = Path(directory) if directory else SEAT_DIR
     return {
         "json": root / f"goldman_contract_positions_{trade_date}.json",
+        "seat_json": root / f"seat_contract_positions_{trade_date}.json",
         "long": root / f"goldman_contract_long_{trade_date}.png",
         "short": root / f"goldman_contract_short_{trade_date}.png",
     }
@@ -550,14 +839,19 @@ def generate(trade_date, prev_date, top_n=DEFAULT_TOP_N, force=False,
         raise ValueError("top_n 必须大于 0")
     paths = output_paths(trade_date, directory)
     paths["json"].parent.mkdir(parents=True, exist_ok=True)
-    if not force and all(path.exists() for path in paths.values()):
+    legacy_paths = (paths["json"], paths["long"], paths["short"])
+    if not force and all(path.exists() for path in (*legacy_paths, paths["seat_json"])):
         try:
             bundle = json.loads(paths["json"].read_text(encoding="utf-8"))
+            seat_bundle = json.loads(paths["seat_json"].read_text(encoding="utf-8"))
             hashes = bundle.get("image_hashes") or {}
             cache_valid = (
                 bundle.get("date") == trade_date
                 and bundle.get("prev_date") == prev_date
                 and bundle.get("top_n") == top_n
+                and seat_bundle.get("date") == trade_date
+                and seat_bundle.get("prev_date") == prev_date
+                and seat_bundle.get("top_n") == top_n
                 and hashes.get("long") == _file_hash(paths["long"])
                 and hashes.get("short") == _file_hash(paths["short"])
             )
@@ -572,14 +866,23 @@ def generate(trade_date, prev_date, top_n=DEFAULT_TOP_N, force=False,
             dominants, _ = load_or_fetch(trade_date, force=force)
         except SystemExit as exc:
             raise RuntimeError(str(exc)) from exc
+    contract_cache = paths["json"].parent / "goldman_contract_cache" / trade_date
     fetched, errors, requested, succeeded = fetch_contracts(
         dominants, trade_date, prev_date, query_fn=query_fn, sleep_sec=sleep_sec,
-        cache_dir=paths["json"].parent / "goldman_contract_cache" / trade_date,
+        cache_dir=contract_cache,
         force=force,
     )
+    responses = load_contract_responses(dominants, contract_cache)
+    # A forced/refreshed request that failed must not silently fall back to an
+    # older raw cache for the all-seat bundle.
+    for contract in errors:
+        responses.pop(contract, None)
     bundle = build_bundle(dominants, fetched, errors, trade_date, prev_date, top_n)
     bundle["coverage"].update(
         requested_contracts=requested, successful_requests=succeeded
+    )
+    seat_bundle = build_seat_contract_bundle(
+        dominants, responses, errors, trade_date, prev_date, top_n=top_n,
     )
     setup_font()
     temporary = {
@@ -597,10 +900,12 @@ def generate(trade_date, prev_date, top_n=DEFAULT_TOP_N, force=False,
         os.replace(temporary["short"], paths["short"])
         # JSON is the commit marker: cache reads only accept images matching these hashes.
         atomic_json(paths["json"], bundle)
+        atomic_json(paths["seat_json"], seat_bundle)
     finally:
         for path in temporary.values():
             path.unlink(missing_ok=True)
     print(f"[产物] {paths['json']}")
+    print(f"[产物] {paths['seat_json']}")
     print(f"[产物] {paths['long']}")
     print(f"[产物] {paths['short']}")
     return bundle, paths

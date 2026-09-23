@@ -110,6 +110,7 @@ def main(argv=None):
             fallback_narrative,
             fetch_market_context,
             generate_narrative,
+            load_contract_positions,
             load_goldman_contract,
             publish_report,
         )
@@ -125,6 +126,7 @@ def main(argv=None):
             df, trade_date, prev, universe=universe,
             source_manifest=source_manifest, market_context=market,
             goldman_contract=load_goldman_contract(trade_date),
+            contract_positions=load_contract_positions(trade_date),
         )
         signals = build_signals(facts)
         api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API") or ""
