@@ -57,6 +57,11 @@ else
   echo "[警告] 未找到 iFinD 动态库目录: ${IFIND_LIBRARY_DIR}"
 fi
 
+# 主力合约换月检查：发现换月会就地更新 config/contracts.yaml 并为新合约全量补数；
+# 失败不阻断日更（最坏情况是当日沿用旧合约，次日重试）。
+"${PYTHON_BIN}" -m backend.pipeline.rollover_check \
+  || echo "[$(date '+%F %T %Z')] [警告] 主力合约换月检查失败，沿用现有合约池继续日更"
+
 "${PYTHON_BIN}" -m backend.pipeline.download --timeframe 1d \
   --ifind-retries "${IFIND_RETRIES}" --ifind-retry-delay "${IFIND_RETRY_DELAY}"
 "${PYTHON_BIN}" -m backend.pipeline.daily --timeframe 1d

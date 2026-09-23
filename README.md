@@ -26,6 +26,7 @@ future/
 │   ├── strategy/              # 策略层（可扩展：实现 compute() 并注册）
 │   │   └── zxgl_xdd.py        #   当前策略：周线过滤+强弱+形态+OPI
 │   ├── pipeline/
+│   │   ├── rollover_check.py  # 主力换月检查：米筐 get_dominant 核对→就地更新 contracts.yaml→新合约补数
 │   │   ├── download.py        # 增量下载脚本：数据源→本地行情库（每日运行，只补新数据）
 │   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
 │   │   ├── scan_report.py     # 每日总结事实扫描：本地产物→结构化事实 JSON（v6 四档判据，summary-v3.0）
@@ -89,8 +90,21 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 
 ## 合约池更新流程（换月/换池）
 
+日常换月已由 `backend.pipeline.rollover_check` 自动处理：服务器日更（refresh_daily.sh）
+每天先按米筐 `get_dominant(rule=0, rank=1)` 逐品种核对主力合约，发现换月就就地更新
+`config/contracts.yaml`（保留注释与条目顺序），并为新合约全量补齐日线/周线/4 小时线
+后重算看板产物；`extra: true` 条目（股指/ETF/定点合约）不参与换月。可手动演练：
+
+```bash
+.venv/Scripts/python -m backend.pipeline.rollover_check --dry-run   # 只报告，不改配置
+.venv/Scripts/python -m backend.pipeline.rollover_check             # 检查并应用换月+补数
+```
+
+整池更换（增减品种）仍走生成器：
+
 ```bash
 # 1. 用新的主力合约 CSV 替换 config/ 下的池文件（或在 contracts.yaml 改 pool_csv 指向）
+#    注意：重跑生成器会以池 CSV 为准覆盖 contracts.yaml，自动换月的结果以重新生成为准
 # 2. 重新生成合约池（extra: true 的手工条目会保留）
 .venv/Scripts/python tools/build_contracts_config.py
 # 3. 日常两条命令即可：新入池合约自动全量补历史，出池合约自动停止更新
@@ -205,7 +219,7 @@ crontab -e
 30 17 * * 1-5 /opt/futrue_track/tools/refresh_daily.sh
 ```
 
-脚本会依次运行下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。iFinD 返回会话失效（如 `ec=-1010 Your account has been logged out`）时，会等待 5 秒、重新登录并额外重试 3 次；可通过 `/etc/future-track.env` 的 `FUTURES_MONITOR_IFIND_RETRIES` 和 `FUTURES_MONITOR_IFIND_RETRY_DELAY` 调整。重试耗尽或发生权限/参数等非会话错误时，脚本会在下载阶段退出，**不会**继续生成信号和榜单。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
+脚本会依次运行主力换月检查（rollover_check，失败仅告警不阻断）、下载、信号计算和榜单生成，使用 `/tmp/future-track-refresh.lock` 防止重叠执行，并写入 `data/logs/refresh.log`。iFinD 返回会话失效（如 `ec=-1010 Your account has been logged out`）时，会等待 5 秒、重新登录并额外重试 3 次；可通过 `/etc/future-track.env` 的 `FUTURES_MONITOR_IFIND_RETRIES` 和 `FUTURES_MONITOR_IFIND_RETRY_DELAY` 调整。重试耗尽或发生权限/参数等非会话错误时，脚本会在下载阶段退出，**不会**继续生成信号和榜单。不要同时启用 systemd timer 和这条 Cron。中国节假日的空跑是安全的，但不会产生新日线。
 
 ### 4 小时看板更新与前端构建
 
