@@ -42,9 +42,9 @@ CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 # 语言规范硬校验：字段名/英文枚举/4位以上小数的回复直接打回重写。
 BANNED = re.compile(
-    r"pos_[14dh]|score_[14dh]|below_EE|close_[14dh]|EE_[14dh]|DD_[14dh]|KK_[14dh]|PP_[14dh]"
-    r"|rank_change|retest_count|reopened_long|repaired|superseded|verdict|LEAD_|ABSO_|QUASI_|TIER_"
-    r"|pos=|c[1-4][=：]|why[=：]|\d\.\d{4,}"
+    r"pos_[14dh]|score_[14dh]|d4h|prev_score|below_EE|breach_4h|close_[14dh]|EE_[14dh]|DD_[14dh]|KK_[14dh]|PP_[14dh]"
+    r"|rank_change|rank_history|in_bucket|key_4h|tier_name|provisional|signal_actions"
+    r"|pos=|tier[=：]|side[=：]|LEAD_|D4H_|NEW_STRONG|\d\.\d{4,}"
 )
 
 SYSTEM_PROMPT = (
@@ -52,14 +52,15 @@ SYSTEM_PROMPT = (
     "【语言规范·必须遵守】"
     "1. 全部用完整中文短句，禁止电报体、禁止只罗列合约代码；"
     "2. 品种首次出现写中文名+代码（如「对二甲苯（PX611）」），同段后文可用中文名；一段话点名不超过4只，更多时用「等N只」；"
-    "3. 禁止出现任何JSON字段名或英文枚举：pos_4h、score_4h、below_EE_4h、close_4h、EE_4h、rank_change、retest_count、repaired、reopened_long、superseded、verdict、why、LEAD_1D、ABSO_1D、QUASI_1D、TIER_4H 等，一律改用中文（4h持仓、收破4h EE、满足修复证据、判据条件等）；"
+    "3. 禁止出现任何JSON字段名或英文枚举：score_1d、score_4h、d4h、prev_score_4h、tier、side、in_bucket_4h、breach_4h、rank_change、rank_history、provisional、LEAD_1D、D4H_SIG、NEW_STRONG_4H 等，一律改用中文（日线评分、4h评分、4h环比、档位、在桶、破位等）；"
     "4. 数字格式化：价格和关键位最多2位小数，百分比最多1位，评分最多2位；禁止照抄长小数（如8702.666666666666必须写成8702.67）；"
     "5. 一段话只讲一件事，关键位引用最多两档（如EE与DD），不要把全部档位逐只堆出来。"
-    "【判据铁律】4h转折以日线趋势裁决；日线EE是价格风险参考，是否已平多由SP与当前持仓核验；"
-    "只有明确标注修复成立的才称满足本期回踩修复证据，本期重新开多只证明开多，评分回暖不证明重新开多。"
-    "只在确实收破4h EE时这样描述，并引用同周期收盘价与EE；未知必须写未知。"
-    "分歧按判定结论与条件解释；待核验不等于抵抗成立；板块当前空仓数不写成近5日平多数。"
-    "排名是评分派生量，不将名次上升解释为资金流入；空头评分转正不代表自动出榜。"
+    "【判据铁律（v6）】日线定方向、4h定节奏；四档互斥、一只品种只属于一个档，按绝对龙头→危险分歧→新贵→回调优先级取档，空头侧镜像；"
+    "新贵的语义是「新主线启动」：4h环比上升但4h评分仍在负值区的只是力竭回抽，不是新贵，不得写成新势力；"
+    "蓄势池是「4h已强、日线未确认」的观察名单，不是已启动信号；"
+    "Δ4h是环比变化，必须与4h绝对水平一起解读；环比改善站在负值区=空头力竭，不等于多头进攻；"
+    "破位备注：多头侧指4h收破EE，空头侧指4h上破PP，只在事实明确标注时这样描述；未知必须写未知；"
+    "排名是评分派生量，不将名次上升解释为资金流入；空头榜排名上升可能是塌陷假象。"
     "数字只能照抄事实，关键位用DD/EE/KK/PP原值（按第4条格式化），不自行计算阈值。"
     "风格：倒金字塔、最重要的事先说；能用数字就不用形容词；严重项加⚠️。"
     "只输出JSON纯文本，不要HTML、Markdown或代码围栏。"
@@ -81,23 +82,23 @@ def _with(facts, *keys):
 
 
 # 任务表：名称 → (返回类型, 写作要求, 事实子集)。
-# 返回类型：header=tone+one_liner；note=单节点评content；list_cautions/list_tips=items数组。
+# 返回类型：header=tone+one_liner；note=单节点评content；list_cards=核心判断卡；
+# list_cautions/list_tips=items数组。
 TASKS = {
     "header": ("header", "写tone（≤10字中文定性，不含代码与英文，如「空头扩散日」）与one_liner（≤80字完整一句中文：多空计数变化＋当日最重要的一件事，品种最多点3只且用中文名，禁止罗列代码）。",
-               ("overview", "new_signals", "leaders")),
-    "1": ("note", "写两口径总览点评（≤150字）：日线定方向、4h定节奏；与前一日的变化；分桶重叠不可相加。开头不要写节名。", ("overview",)),
-    "2": ("note", "写趋势与龙头点评（≤160字）：梯队分档依据用中文说（如「日线与4h双强」「日线评分≥10」）；点名龙头用中文名；只在确实收破4h EE时提及。开头不要写节名。",
-          ("leaders", "long_4h_tiers", "long_positions")),
-    "3": ("note", "写龙头回踩点评（≤140字）：现价与支撑带EE/DD的距离、历史回踩日期、4h状态；远离支撑带不得写正在低吸。开头不要写节名。", ("leader_retest",)),
-    "4": ("note", "写分歧名单点评（≤160字）：用自然语言解释判定结论与成立/不成立的条件（不要出现c1/c2等编号）；农/工分流结论；单只预警不等于风险解除，待核验不等于抵抗成立。开头不要写节名。", ("divergence",)),
-    "5": ("note", "写看空主线点评（≤140字）：空头分层（当日新开/持续/反弹），各层代表品种用中文名；空头评分转正不写成即将出榜。开头不要写节名。", ("short_positions",)),
-    "6": ("note", "写阶段转折点评（≤150字）：转折是历史事件不等于当前仓位；平仓不写成反向开仓；只有明确修复成立的才写已验证修复。开头不要写节名。", ("turn",)),
-    "7": ("note", "写熊头遇压点评（≤140字）：现价与压力带KK/PP位置、触压日期；未进入压力带不得写已遇压；收盘上破PP为条件失效。开头不要写节名。", ("bear_pressure",)),
-    "9": ("note", "写排名雷达点评（≤150字）：显著升降与新入榜（品种用中文名），交叉核验4h状态；单日改善不写成连续走强。开头不要写节名。", ("rank_radar",)),
-    "cautions": ("list_cautions", "给2~4条「别误读」提醒，覆盖本期最容易被误读的事实（如转折≠当前仓位、4h修复≠日线风险解除）。每条{\"title\":\"≤14字中文标题\",\"body\":\"≤80字完整中文句\"}。",
-                 ("overview", "divergence", "turn", "leaders", "new_signals")),
-    "tips": ("list_tips", "给6~9条操作提示，每条一个主题、一句完整中文：动作＋品种中文名＋最多两档关键位价格（2位小数）；按重要度排序，严重项加⚠️；禁止逐只罗列整组合约、禁止堆全部档位。",
-             ("key_levels", "leaders", "divergence", "turn", "new_signals")),
+               ("overview", "signal_actions", "tiers_long", "tiers_short")),
+    "judge": ("list_cards", "写3~5张核心判断卡（当日最重要的几件事，倒金字塔）。每张={\"title\":\"编号+emoji+≤14字标题\",\"fact\":\"事实：带数字的完整中文句，≤90字\",\"action\":\"动作：一句可执行结论，≤50字\"}。事实只能照抄扫描JSON，动作要落到具体品种与关键位。",
+              ("overview", "signal_actions", "tiers_long", "tiers_short", "pool", "momentum", "key_levels")),
+    "2": ("note", "写多头四档表点评（≤160字）：各档数量与代表品种（中文名）；龙头是否双周期双强；危险分歧的减仓理由；回调与未入档的分流去向（含蓄势池）。开头不要写节名。",
+          ("tiers_long", "pool")),
+    "3": ("note", "写空头镜像四档表点评（≤160字）：同多头侧要求；提醒空头榜排名上升可能是塌陷假象，不写成资金流入。开头不要写节名。",
+          ("tiers_short", "pool")),
+    "pool": ("note", "写蓄势池点评（≤120字）：入池品种的共同特征（4h已强、日线未确认）、提级条件与出池条件；本期无则明确写无。开头不要写节名。", ("pool",)),
+    "4": ("note", "写动量异动榜点评（≤150字）：多向加速与空向失速代表品种（中文名），每条与档位交叉印证；负值区环比改善是力竭回抽、不是进攻。开头不要写节名。", ("momentum",)),
+    "cautions": ("list_cautions", "给2~4条「别误读」提醒，覆盖本期最容易被误读的事实（如蓄势池≠已启动、力竭回抽≠新贵、排名升≠资金流入、破位备注含义）。每条{\"title\":\"≤14字中文标题\",\"body\":\"≤80字完整中文句\"}。",
+                 ("overview", "signal_actions", "tiers_long", "tiers_short", "pool", "momentum")),
+    "tips": ("list_tips", "给5~8条操作提示，倒金字塔，每条一个动作、一句完整中文：动作＋品种中文名＋最多两档关键位价格（2位小数）；严重项加⚠️；最后一条固定为「明日复核重点」编号清单。禁止逐只罗列整组合约。",
+             ("key_levels", "tiers_long", "tiers_short", "pool", "signal_actions")),
 }
 
 
@@ -152,6 +153,7 @@ def build_messages(facts, name):
     kind, instruction, keys = TASKS[name]
     example = {"header": {"tone": "空头扩散日", "one_liner": "……"},
                "note": {"content": "……"},
+               "list_cards": {"items": [{"title": "1️⃣ ……", "fact": "……", "action": "……"}]},
                "list_cautions": {"items": [{"title": "……", "body": "……"}]},
                "list_tips": {"items": ["……"]}}[kind]
     user = (instruction + "\n输出格式示例：" + json.dumps(example, ensure_ascii=False) +
@@ -184,7 +186,20 @@ def apply_reply(narrative, name, data):
     else:
         items = data.get("items")
         if isinstance(items, list) and items:
-            if kind == "list_cautions":
+            if kind == "list_cards":
+                cleaned = []
+                for it in items[:6]:
+                    if not isinstance(it, dict):
+                        continue
+                    title = need(it.get("title"), "cards.title", 60)
+                    fact = need(it.get("fact"), "cards.fact", 300)
+                    action = need(it.get("action"), "cards.action", 200)
+                    if title and fact and action:
+                        cleaned.append({"title": title, "fact": fact, "action": action})
+                if cleaned:
+                    narrative["judge_cards"] = cleaned
+                    return True
+            elif kind == "list_cautions":
                 cleaned = []
                 for it in items[:6]:
                     if isinstance(it, dict):
@@ -208,7 +223,7 @@ def apply_reply(narrative, name, data):
 
 def generate(facts, model, timeout, max_tokens, retries=2):
     narrative = {"report_date": None, "input_hash": facts["input_hash"],
-                 "source": f"{model} 自动叙事 · 已绑定本次事实（发布前请核对）", "section_notes": {}}
+                 "source": f"{model} 自动叙事（发布前请核对）", "section_notes": {}}
     done, failed = [], []
     for name in TASKS:
         messages = build_messages(facts, name)

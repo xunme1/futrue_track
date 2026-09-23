@@ -28,7 +28,7 @@ future/
 │   ├── pipeline/
 │   │   ├── download.py        # 增量下载脚本：数据源→本地行情库（每日运行，只补新数据）
 │   │   ├── daily.py           # 每日计算流水线：读本地库→信号→导出 JSON/CSV
-│   │   ├── scan_report.py     # 每日总结事实扫描：本地产物→结构化事实 JSON（判据 v4）
+│   │   ├── scan_report.py     # 每日总结事实扫描：本地产物→结构化事实 JSON（v6 四档判据，summary-v3.0）
 │   │   ├── summary_narrator.py# 可选：调 DeepSeek 按 summary_contract 生成叙事（密钥走 DEEPSEEK_API_KEY）
 │   │   ├── summary_render.py  # 每日总结合成渲染：事实+叙事（可选）→归档 HTML
 │   │   ├── seat_core.py       # 席位追踪共享层：三席分组/净持仓计算（繁微封装仅供 probe 调试）
@@ -113,7 +113,8 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.summary_narrator# 6. 可选：LLM 叙事（需 DEEPSEEK_API_KEY，缺失自动跳过）
 .venv/Scripts/python -m backend.pipeline.summary_render  # 7. 合成每日总结 HTML（data/reports/）
 #    叙事格式见 docs/summary_contract.md；任一步失败由规则模板兜底；看板「📰 日报」入口回看历史总结
-#    判据体系见资料库《期货看板日报 · 方法论与复制指南》（v4）：农/工分流、回踩 vs 分歧裁决树
+#    判据体系见《期货看板日报_方法论与复制指南_v6》与 docs/methodology_v6_review.md：
+#    四档互斥（龙头/危险分歧/新贵/回调，空头镜像）＋ Δ4h 环比 ＋ 🟢 4h 蓄势池
 
 # 席位追踪（服务器 refresh_seat.sh 每交易日 18:05 自动执行；会员排名/行情均走米筐，
 # 需 FUTURES_RQDATA_LICENSE_KEY；AI 叙事需 DEEPSEEK_API_KEY；缺失时规则模板兜底，产物归档 data/seat/）：

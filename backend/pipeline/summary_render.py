@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""期货看板每日总结 · HTML 渲染器（报告流水线第 2 步）。
+"""期货看板每日总结 · HTML 渲染器（v6 五节结构，报告流水线第 2 步）。
 
 读取 scan_report 产出的扫描 JSON（data/reports/scan/scan_YYYY-MM-DD.json），
 叠加可选叙事 JSON（data/reports/narrative/narrative_YYYY-MM-DD.json，由 LLM 按
@@ -7,7 +7,11 @@ docs/summary_contract.md 撰写；缺字段时以规则化模板兜底），渲�
 
     data/reports/daily_summary_YYYY-MM-DD.html
 
-版式与配色对齐资料库成品《期货看板每日总结》（9 节结构 + 浅色卡片）。
+结构对齐《期货看板日报 · 方法论与复制指南 v6》§3 五节固定模板：
+头部 → 一·核心判断（当日信号动作 + judge-card）→ 二·多头四档表 →
+三·空头镜像四档表 → 三补·🟢4h 蓄势池 → 四·动量异动榜 → 五·操作提示 → 尾·口径说明。
+视觉类名按 v6 §3.1 固定：.header/.oneline/.card/.judge-grid/.judge-card/.note/
+表格/.lead .pull .danger .bear .fresh .flat/.foot。
 
 用法：
     python -m backend.pipeline.summary_render
@@ -23,6 +27,7 @@ from pathlib import Path
 
 from backend.core.config import DATA_DIR
 from backend.pipeline.report_store import RULES_VERSION, atomic_json, atomic_text, iso_day, digest
+from backend.pipeline.scan_report import TIER_NAMES, TIER_ORDER
 
 REPORTS_DIR = DATA_DIR / "reports"
 SCAN_DIR = REPORTS_DIR / "scan"
@@ -32,6 +37,11 @@ SEAT_DIR = DATA_DIR / "seat"
 DASHBOARD_URL = "http://110.42.220.207:8000/"
 
 WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+# 版本行（v6 §3.1 头部必含）：写清当期版本号与本期生效的规则变更。
+VERSION_NOTE = ("方法论 v6.2（四档互斥：龙头 → 危险分歧 → 新贵 → 回调，空头镜像）｜"
+                "本期生效：🚀新贵 4h 强势前置（4h 评分须 > 1.0，负区回抽不算新贵）＋ 🟢 4h 蓄势池"
+                f"（实现规则版本 {RULES_VERSION}）")
 
 
 def _esc(s) -> str:
@@ -80,16 +90,27 @@ def _names(rows, maxn=0) -> str:
     return "、".join(items)
 
 
+def _sc(r):
+    return (r or {}).get('score') or 0
+
+
+def _gap(close, ref):
+    return (close - ref) / ref * 100 if (close and ref) else None
+
+
+def _acts_1d(f):
+    return [x for x in f.get('signal_actions', []) if x.get('tf') == '1d']
+
+
 # ---------------------------------------------------------------- 兜底叙事
 def fallback_tone(f):
     """从可核验的两口径计数变化给当日定性。"""
     if any(v.get('unknown', 0) for v in f.get('coverage', {}).values()):
         return '数据不完整 · 暂停方向定性'
     o, p = f['overview']['1d'], f['overview'].get('prev_1d')
-    o4 = f['overview']['4h']
     d_long = o['long_trend'] - (p or {}).get('long_trend', o['long_trend'])
     d_short = o['short_trend'] - (p or {}).get('short_trend', o['short_trend'])
-    acts = f.get('new_signals', {}).get('1d', [])
+    acts = _acts_1d(f)
     n_bk = sum(1 for x in acts if x.get('signal') == 'BK')
     n_sk = sum(1 for x in acts if x.get('signal') == 'SK')
     n_sp = sum(1 for x in acts if x.get('signal') == 'SP')
@@ -112,66 +133,123 @@ def fallback_one_liner(f, tone):
     dd = _md(f['data_date'])
     o, p = f['overview']['1d'], f['overview'].get('prev_1d') or {}
     o4 = f['overview']['4h']
-    acts = f.get('new_signals', {}).get('1d', [])
+    acts = _acts_1d(f)
     seg = []
     for sig, verb in (('BK', '新开多'), ('SK', '新开空'), ('SP', '平多离场'), ('BP', '平空离场')):
         rows = [x for x in acts if x.get('signal') == sig]
         if rows:
             seg.append(f"{len(rows)} 只{verb}（{_names(rows, 6)}）")
+    lead = len(f.get('tiers_long', {}).get('lead', []))
+    bear = len(f.get('tiers_short', {}).get('lead', []))
     head = f"{dd} 是{tone}"
     if seg:
         head += " —— 日线 " + "、".join(seg)
-    return (head + f"。日线多空 {o['long_trend']} : {o['short_trend']}"
+    return (head + f"。绝对龙头 {lead} 只 / 绝对熊头 {bear} 只；"
+            f"日线多空 {o['long_trend']} : {o['short_trend']}"
             f"（前 {(p or {}).get('long_trend', '—')} : {(p or {}).get('short_trend', '—')}），"
             f"4h 多空 {o4['long_trend']} : {o4['short_trend']}。")
 
 
 def fallback_cautions(f):
-    """规则生成的「别误读」提示：只在数据支持时输出。
-
-    返回 [{'title','body'}]，两者均为纯文本 —— 渲染层负责拼装 HTML 并转义，
-    避免规则串里夹标签被二次转义（历史版本就栽在这里）。
-    """
+    """规则生成的「别误读」提示：只在数据支持时输出（纯文本，渲染层负责转义）。"""
     out = []
-    o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
-    n_sl, p_sl = o4.get('short_to_long', 0), p4.get('short_to_long')
-    if p_sl is not None and n_sl > p_sl:
-        real = [x for x in f['turn']['B'] if x.get('current_long_4h')]
-        out.append({
-            'title': f"别误读「4h 空转多 {p_sl}→{n_sl}」",
-            'body': (f"其中当前4h持多且最近信号为 BK的只有 {len(real)} 只"
-                     + (f"（{_names(real, 6)}）" if real else "")
-                     + "，其余仅是蓝转红候选，不构成翻多。"),
-        })
-    red = [x for x in f['divergence']['items'] if x.get('level') == '🔴']
-    if red:
-        out.append({
-            'title': f"分歧名单 {len(red)} 只已到 🔴 级（{_names(red, 8)}）",
-            'body': "多单不持有 / 先撤；修复信号 = 4h 重新 BK。",
-        })
+    prov = [r['code'] for side in ('tiers_long', 'tiers_short')
+            for t in TIER_ORDER for r in f.get(side, {}).get(t, []) if r.get('provisional')]
+    if prov:
+        out.append({'title': 'Δ4h 缺失的分档是暂定',
+                    'body': f"{'、'.join(sorted(set(prov)))} 缺少前一交易日 4h 评分，"
+                            f"依赖环比的档位（危险分歧/新贵）无法确认，当前档位加 ※ 暂定。"})
+    pool = f.get('pool', {})
+    n_pool = len(pool.get('long', [])) + len(pool.get('short', []))
+    if n_pool:
+        out.append({'title': '蓄势池不是已启动信号',
+                    'body': f"🟢 蓄势池 {n_pool} 只是「4h 已强、日线未确认」的观察名单，"
+                            f"日线评分越槛或日线开多/开空确认后才提级进实档。"})
+    accel_neg = [i for i in f.get('momentum', {}).get('accel', [])
+                 if i.get('score_4h') is not None and i['score_4h'] <= 1.0]
+    if accel_neg:
+        out.append({'title': '负值区环比改善 ≠ 新贵',
+                    'body': f"{_names(accel_neg, 6)} 4h 环比改善但 4h 评分未越过 +1.0，"
+                            f"属空头力竭回抽，不是多头进攻，不入新贵档。"})
     return out
 
 
-def fallback_tips(f):
+def fallback_judge_cards(f):
+    """规则版核心判断卡：每张 = title / fact / action。"""
+    cards = []
+    tl, ts = f.get('tiers_long', {}), f.get('tiers_short', {})
+    lead, bear = tl.get('lead', []), ts.get('lead', [])
+    if lead or bear:
+        cards.append({
+            'title': f"1️⃣🥇 双强阵营：龙头 {len(lead)} 只 / 熊头 {len(bear)} 只",
+            'fact': f"绝对龙头：{_names(lead, 8) or '无'}；绝对熊头：{_names(bear, 8) or '无'}。",
+            'action': "龙头拿住核心仓、熊头空单拿住；双周期双强是最高权重信号。",
+        })
+    danger = tl.get('danger', []) + ts.get('danger', [])
+    if danger:
+        cards.append({
+            'title': f"2️⃣🔴 危险分歧 {len(danger)} 只",
+            'fact': "；".join(f"{_name(x)}（{_esc_free(x['reason'])}）" for x in danger[:6]),
+            'action': "危险分歧 = 4h 转弱且环比显著恶化：多单减仓/撤，空单侧镜像防反转。",
+        })
+    fresh = tl.get('fresh', []) + ts.get('fresh', [])
+    if fresh:
+        cards.append({
+            'title': f"3️⃣🚀 新贵 {len(fresh)} 只",
+            'fact': "、".join(_name(x) for x in fresh[:8]),
+            'action': "4h 环比与绝对水平双确认的新主线候选，可关注/试仓。",
+        })
+    pool = f.get('pool', {})
+    pool_all = pool.get('long', []) + pool.get('short', [])
+    if pool_all:
+        cards.append({
+            'title': f"4️⃣🟢 蓄势池 {len(pool_all)} 只",
+            'fact': "、".join(_name(x) for x in pool_all[:8]),
+            'action': "4h 已强、日线未确认：小仓试多/观察，日线越槛提级，4h 掉桶出池。",
+        })
+    acts = f.get('signal_actions', [])
+    if acts:
+        by_sig = {}
+        for x in acts:
+            by_sig.setdefault(x['signal'], []).append(x)
+        fact = "；".join(f"{sig} {len(rows)} 只（{_names(rows, 6)}）" for sig, rows in by_sig.items())
+        cards.append({'title': f"5️⃣📋 当日信号动作 {len(acts)} 条", 'fact': fact,
+                      'action': "新开仓信号核对关键位后执行；平仓信号优先兑现。"})
+    return cards[:5]
+
+
+def _esc_free(s):
+    return str(s).lstrip('※')
+
+
+def fallback_tips(f, report_date=None):
     tips = []
-    for x in f['divergence']['items']:
-        if x.get('level') == '🔴':
-            tips.append(f"{_name(x)}：{'＋'.join(x.get('why') or ['分歧'])} → 多单不持有 / 先撤。")
-        elif x.get('level') == '🟠':
-            tips.append(f"{_name(x)}：{'＋'.join(x.get('why') or ['分歧'])} → 多单减半，破 EE {_n(x.get('EE'))} 走。")
-        elif x.get('verdict') == '多头抵抗':
-            tips.append(f"{_name(x)}（农产品）：四项证据齐全 → 抵抗候选，等待新的交易信号确认；日线参考 EE {_n(x.get('EE'))} 才算失败。")
-    for x in f['turn']['A'][:3]:
-        if x.get('verdict') == '共振空':
-            tips.append(f"{_name(x)}：4h + 日线双级共振空 → 可跟空。")
-        elif x.get('verdict') == '日线仍多':
-            tips.append(f"{_name(x)}：4h短周期变化但日线仍多，需核验当前状态，盯日线 EE {_n(x.get('EE_1d'))}，不做空。")
-    for x in f['bear_pressure'][:2]:
-        tips.append(f"{_name(x)}：熊头遇压，反弹进 {_n(x.get('KK'))}–{_n(x.get('PP'))} 压力带可加空。")
-    for x in f['key_levels'][:2]:
+    tl, ts = f.get('tiers_long', {}), f.get('tiers_short', {})
+    for x in tl.get('danger', []):
+        tips.append(f"⚠️ {_name(x)}：{_esc_free(x['reason'])}。")
+    for x in ts.get('danger', []):
+        tips.append(f"⚠️ {_name(x)}：{_esc_free(x['reason'])}。")
+    lead, bear = tl.get('lead', []), ts.get('lead', [])
+    if lead:
+        tips.append(f"绝对龙头 {_names(lead, 8)}：双周期双强，核心仓拿住，回调不破 4h 趋势不减。")
+    if bear:
+        tips.append(f"绝对熊头 {_names(bear, 8)}：双周期双空，空单拿住，反弹不加多。")
+    fresh = tl.get('fresh', []) + ts.get('fresh', [])
+    if fresh:
+        tips.append(f"新贵 {_names(fresh, 8)}：新主线候选，小仓试，4h 评分跌回 ±1.0 内即撤。")
+    pool_all = f.get('pool', {}).get('long', []) + f.get('pool', {}).get('short', [])
+    if pool_all:
+        tips.append(f"蓄势池 {_names(pool_all, 8)}：观察为主，日线确认后再提级加仓。")
+    for x in f.get('key_levels', [])[:2]:
         if x['label'] == '多头距EE':
             tips.append(f"{x['name']} {x['code']}：距日线 EE 仅 {x['gap_pct']:+.2f}%，多单警戒线。")
-    return tips[:9]
+        else:
+            tips.append(f"{x['name']} {x['code']}：距日线 KK 仅 {x['gap_pct']:+.2f}%，空单警戒线。")
+    review = lead[:1] + tl.get('danger', [])[:1] + tl.get('fresh', [])[:1] + pool_all[:1]
+    if review:
+        tips.append("明日复核重点：" + "、".join(_name(x) for x in review)
+                    + " —— 复核 4h 桶归属与 Δ4h 环比是否延续。")
+    return tips[:8]
 
 
 # ---------------------------------------------------------------- 组件
@@ -191,24 +269,48 @@ def _table(headers, rows):
 
 def _section(n, title, body, note=None):
     note_html = f'<div class="note">{_esc(note)}</div>' if note else ""
-    if n >= 4:
-        return (f'<details class="card fold-section"><summary>'
-                f'<h2><span class="n">{n}</span><span>{title}</span></h2>'
-                '<span class="fold-label" aria-hidden="true"><span class="fold-show">展开</span>'
-                '<span class="fold-hide">收起</span><span class="fold-arrow">⌄</span></span>'
-                f'</summary><div class="fold-body">{note_html}{body}</div></details>')
-    return f'<div class="card"><h2><span class="n">{n}</span>{title}</h2>{note_html}{body}</div>'
+    return f'<div class="card"><h2><span class="n">{_esc(str(n))}</span>{_esc(title)}</h2>{note_html}{body}</div>'
 
 
-def _grp(rows, by_sector=True):
-    if not rows:
-        return "—"
-    if not by_sector:
-        return "、".join(_name(r) for r in rows)
-    g = {}
-    for r in rows:
-        g.setdefault(r.get('sector') or '其他', []).append(r)
-    return "；".join(f"{s}（{'、'.join(_name(x) for x in v)}）" for s, v in g.items())
+def _badge(tier, side):
+    """档位徽章：六色语义类 .lead .pull .danger .bear .fresh .flat。"""
+    cls = {'lead': 'lead' if side == 1 else 'bear'}.get(tier, tier)
+    return f'<span class="bdg2 {cls}">{_esc(TIER_NAMES[side][tier])}</span>'
+
+
+def _rank_track(r):
+    hist = r.get('rank_history') or []
+    if not hist:
+        return '<span class="mut">—</span>'
+    return '<span class="mut">' + _esc(" ".join(
+        str(x.get('rank')) if x.get('rank') is not None else '-' for x in hist[-7:])) + '</span>'
+
+
+def _d4h_cell(r):
+    if r.get('d4h') is None:
+        return '<span class="mut">—※</span>'
+    v = r['d4h']
+    cls = 'up' if v > 0 else ('dn' if v < 0 else 'mut')
+    return f'<span class="{cls}">{v:+.2f}</span>'
+
+
+def _tier_rows(tiers, side):
+    """四档表行：品种 ｜ 日线 score ｜ 4h score ｜ Δ4h ｜ 排名轨迹(7日) ｜ 档位 ｜ 一句话。"""
+    rows = []
+    for t in TIER_ORDER:
+        for r in tiers.get(t, []):
+            s4 = r.get('score_4h')
+            s4_cls = 'up' if (s4 or 0) > 0 else ('dn' if (s4 or 0) < 0 else 'mut')
+            rows.append([
+                f"<b>{_esc(r['name'])}</b> <span class='mut'>{_esc(r['code'])}</span>",
+                f'<span class="nowrap">{_n(r.get("score_1d"))}</span>',
+                f'<span class="{s4_cls}">{_n(s4)}</span>',
+                _d4h_cell(r),
+                _rank_track(r),
+                _badge(t, side),
+                _esc(r.get('reason')),
+            ])
+    return rows
 
 
 # ---------------------------------------------------------------- 各节
@@ -239,7 +341,9 @@ def render_header(f, narrative, report_date):
     <span>数据基准：<b>{_esc(dd)}（{_esc(_wd(dd))}）收盘</b>（1d {_esc(f['generated_at']['1d'][11:16])} / 4h {_esc(f['generated_at']['4h'][11:16])} 生成）</span>
     <span>对比基准：<b>{_esc(_md(prev))}</b>（1d {p.get('long_trend', '—')} 多 / {p.get('short_trend', '—')} 空；4h {p4.get('long_trend', '—')} 多 / {p4.get('short_trend', '—')} 空）</span>
     <span>看板：<b>{_esc(DASHBOARD_URL.replace('http://', '').rstrip('/'))}</b></span>
+    <span>本次运行：<b>{_esc(f.get('created_at', ''))}</b></span>
   </div>
+  <div class="hd-sub" style="margin-top:8px"><span>版本：<b>{_esc(VERSION_NOTE)}</b></span></div>
   <div class="hd-sub" style="margin-top:10px">{chips}</div>
 </header>"""
 
@@ -268,243 +372,156 @@ def render_cautions(f, narrative):
     return "".join(out)
 
 
-def s1_overview(f, notes):
-    o, p = f['overview']['1d'], f['overview'].get('prev_1d') or {}
-    o4, p4 = f['overview']['4h'], f['overview'].get('prev_4h') or {}
-    rows = [
-        ('日线多头', o['long_trend'], p.get('long_trend')),
-        ('日线空头', o['short_trend'], p.get('short_trend')),
-        ('日线多转空', o['long_to_short'], p.get('long_to_short')),
-        ('日线多转空预警', o['long_to_short_warning'], p.get('long_to_short_warning')),
-        ('日线空转多', o['short_to_long'], p.get('short_to_long')),
-        ('日线回踩', o['long_support_warning'], p.get('long_support_warning')),
-        ('日线遇压', o['short_pressure_warning'], p.get('short_pressure_warning')),
-    ]
-    left = "".join(
-        f'<div class="ovrow"><span>{_esc(t)}</span><span>{cur}'
-        + (f' <span class="mut">（前 {pv}）</span>' if pv is not None and pv != cur else '')
-        + '</span></div>' for t, cur, pv in rows)
-    rows4 = [
-        ('4h 多头', o4['long_trend'], p4.get('long_trend')),
-        ('4h 空头', o4['short_trend'], p4.get('short_trend')),
-        ('4h 多转空', o4['long_to_short'], p4.get('long_to_short')),
-        ('4h 空转多', o4['short_to_long'], p4.get('short_to_long')),
-    ]
-    right = "".join(
-        f'<div class="ovrow"><span>{_esc(t)}</span><span>{cur}'
-        + (f' <span class="mut">（前 {pv}）</span>' if pv is not None and pv != cur else '')
-        + '</span></div>' for t, cur, pv in rows4)
-    acts = f.get('new_signals', {}).get('1d', [])
-    act_txt = "、".join(f"{x['code']}({x['signal']})" for x in acts) or "无"
-    body = (f'<div class="ov"><div class="ovc"><div class="ot">日线口径</div>{left}</div>'
-            f'<div class="ovc"><div class="ot">4 小时口径</div>{right}</div></div>'
-            f'<p style="margin-top:12px">当日日线新信号：<b>{_esc(act_txt)}</b></p>')
-    body += '<p>当日4小时新信号：<b>' + _esc('、'.join(x['code'] + '(' + str(x['signal']) + ')' for x in f.get('new_signals', {}).get('4h', [])) or '无') + '</b></p>'
-    return _section(1, "两口径总览", body, notes.get('1'))
+def s1_core(f, narrative, notes):
+    """一、核心判断：0️⃣ 当日信号动作（全列不省略）+ judge-card 栅格。"""
+    acts = f.get('signal_actions', [])
+    SIG_LABEL = {'BK': '开多', 'SK': '开空', 'SP': '平多', 'BP': '平空'}
+    lines = []
+    for tf, label in (('1d', '日线'), ('4h', '4小时')):
+        rows = [x for x in acts if x.get('tf') == tf]
+        txt = ("、".join(f"{_esc(x['name'])} {_esc(x['code'])}（{_esc(x['signal'])} "
+                         f"{SIG_LABEL.get(x['signal'], x['signal'])}）" for x in rows) or "无")
+        lines.append(f'<div class="ovrow"><span>{label}信号</span><span style="font-weight:400;text-align:right">{txt}</span></div>')
+    sig_block = ('<div class="sigblock"><div class="ot">0️⃣ 当日信号动作（必读 · 全列不省略）</div>'
+                 + "".join(lines) + '</div>')
+
+    cards = (narrative or {}).get('judge_cards') or fallback_judge_cards(f)
+    card_html = []
+    for i, c in enumerate(cards):
+        title = str(c.get('title', ''))
+        cls = 'j-red' if any(k in title for k in ('🔴', '危险', '撤')) else \
+              'j-green' if any(k in title for k in ('🟢', '蓄势', '龙头', '双强')) else 'j-gold'
+        card_html.append(
+            f'<div class="judge-card {cls}"><div class="jt">{_esc(title)}</div>'
+            f'<div class="jf"><span class="jl">事实</span>{_esc(c.get("fact"))}</div>'
+            f'<div class="ja"><span class="jl">动作</span><b>{_esc(c.get("action"))}</b></div></div>')
+    body = sig_block + (f'<div class="judge-grid">{"".join(card_html)}</div>' if card_html else '')
+    return _section('一', '核心判断', body, notes.get('1'))
 
 
-def s2_leaders(f, notes):
-    L = f['leaders']
-    tiers = f['long_4h_tiers']
-    all_rows = [r for rows in tiers.values() for r in rows]
-    ended = [r for r in all_rows if r.get('pos_4h') in (0, -1)]
-    holding = [r for r in all_rows if r.get('pos_4h') == 1
-               and r.get('below_EE_4h') is False and r.get('score_4h') is not None
-               and r['score_4h'] < 1]
-    broken = [r for r in all_rows if r.get('pos_4h') == 1 and r.get('below_EE_4h') is True]
+def s2_long(f, notes):
+    tiers = f.get('tiers_long', {})
+    rows = _tier_rows(tiers, side=1)
+    flat = tiers.get('flat', [])
+    to_pool = {r['code'] for r in f.get('pool', {}).get('long', [])}
+    summary = (f'<p>未入档 {len(flat)} 只'
+               + (f'（其中 {("、".join(sorted(to_pool)))} 转入 🟢 蓄势池，见下节）' if to_pool else '')
+               + '。</p>')
+    broken = [r for t in TIER_ORDER for r in tiers.get(t, []) if r.get('breach_4h') is True]
+    warn = (f'<div class="note">⚠️ 特别警示：{_esc(_names(broken, 10))} 4h 收破 EE（破位），'
+            f'档位之外叠加价格风险，多单贴线品种优先复核。</div>') if broken else ''
+    body = (_table(['品种', '日线 score', '4h score', 'Δ4h', '排名轨迹(7日)', '档位', '一句话'], rows)
+            if rows else '<p>当日无日线持多品种。</p>')
+    return _section('二', '多头阵营 · 四档表', body + summary + warn, notes.get('2'))
 
-    def leader_rows(rows):
-        return [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
-                 _n(r.get('score_4h')), f"#{r.get('rank') or '—'}", _sign(r.get('rank_change'))]
-                for r in rows]
+
+def s3_short(f, notes):
+    tiers = f.get('tiers_short', {})
+    rows = _tier_rows(tiers, side=-1)
+    flat = tiers.get('flat', [])
+    to_pool = {r['code'] for r in f.get('pool', {}).get('short', [])}
+    summary = (f'<p>未入档 {len(flat)} 只'
+               + (f'（其中 {("、".join(sorted(to_pool)))} 转入 🟢 蓄势池，见下节）' if to_pool else '')
+               + '。</p>')
+    warn = ('<div class="note">提示：空头榜排名上升 = 相对名次的塌陷假象，'
+            '不代表资金流入或主动走强；出榜以持仓变化为准。</div>')
+    broken = [r for t in TIER_ORDER for r in tiers.get(t, []) if r.get('breach_4h') is True]
+    if broken:
+        warn += (f'<div class="note">⚠️ 特别警示：{_esc(_names(broken, 10))} 4h 上破 PP（破位），'
+                 f'空单侧价格风险优先复核。</div>')
+    body = (_table(['品种', '日线 score', '4h score', 'Δ4h', '排名轨迹(7日)', '档位', '一句话'], rows)
+            if rows else '<p>当日无日线持空品种。</p>')
+    return _section('三', '空头阵营 · 镜像四档表', body + summary + warn, notes.get('3'))
+
+
+def s3b_pool(f, notes):
+    pool = f.get('pool', {})
+    long_rows, short_rows = pool.get('long', []), pool.get('short', [])
+    if not long_rows and not short_rows:
+        return _section('三·补', '🟢 4h 蓄势池', '<p>本期无。</p>', notes.get('pool'))
+
+    def rows_of(items, side):
+        return [[f"<b>{_esc(r['name'])}</b> <span class='mut'>{_esc(r['code'])}</span>",
+                 f'<span class="{"up" if side == 1 else "dn"}">{_n(r.get("score_4h"))}</span>',
+                 _d4h_cell(r),
+                 _n(r.get('score_1d')),
+                 _esc(r.get('reason')),
+                 _esc(r.get('upgrade'))] for r in items]
 
     parts = []
-    if L['dual']:
-        parts.append(f"<h3>🥇 双强龙头（{len(L['dual'])} 只）—— 日线强 ＋ 4h 强，最该拿住的一批</h3>"
-                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['dual'])))
-    if L['absolute']:
-        parts.append(f"<h3>🥇 日线绝对龙头（{len(L['absolute'])} 只）—— 日线极强，4h 只弱正</h3>"
-                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['absolute'])))
-    if L['quasi']:
-        parts.append(f"<h3>🥈 准龙头（{len(L['quasi'])} 只）</h3>"
-                     + _table(['品种', '代码', '日线', '4h', '排名', '变化'], leader_rows(L['quasi'])))
-    if holding:
-        parts.append(f"<h3>🟡 回踩持有多头（{len(holding)} 只）—— 4h仍持多且未破4h EE，评分偏弱需观察</h3>"
-                     + _table(['品种', '代码', '日线', '4h', '距 EE', '状态'],
-                              [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
-                                _n(r.get('score_4h')), f"{_n(r.get('gap_to_EE'))}%", _esc(r['tier'])]
-                               for r in holding]))
-    for label, data in [('⚠️ 4h 多头已结束（空仓或持空，未重新 BK）', ended),
-                        ('🚨 4h 仍持多但收破支撑', broken),
-                        ('⚪ 4h数据不足 · 已知状态仍保留', tiers.get('4h未知', []))]:
-        if data:
-            parts.append(f'<h3>{label}（{len(data)} 只）</h3>' + _state_table(data))
-    if not parts:
-        parts.append("<p>当日无满足龙头门槛的品种。</p>")
-    return _section(2, "📈 趋势与龙头（权重最高 · 重点看）", "".join(parts), notes.get('2'))
+    if long_rows:
+        parts.append(f'<h3>多头蓄势（{len(long_rows)} 只）</h3>'
+                     + _table(['品种', '4h score', 'Δ4h', '日线 score', '入池理由', '提级条件'],
+                              rows_of(long_rows, 1)))
+    if short_rows:
+        parts.append(f'<h3>空头蓄势（{len(short_rows)} 只）</h3>'
+                     + _table(['品种', '4h score', 'Δ4h', '日线 score', '入池理由', '提级条件'],
+                              rows_of(short_rows, -1)))
+    parts.append('<div class="note">蓄势池 = 四档之外的补充标记：4h 已在趋势桶且评分越过 ±1.0，'
+                 '但日线这一侧还没确认。小仓试/观察；4h 掉出趋势桶即出池。'
+                 '未入池的 ⚪ 未入档品种属真·未入档，4h 水平不足。</div>')
+    return _section('三·补', '🟢 4h 蓄势池', "".join(parts), notes.get('pool'))
 
 
-def _state_table(rows):
-    return _table(['品种', '日线评分', '日线DD / EE', '4h评分', '4h状态', '4h收盘 / EE', '最近4h交易信号'],
-                  [[f"<b>{_esc(_name(r))}</b>", _n(r.get('score')), f"{_n(r.get('DD'))} / {_n(r.get('EE'))}", _n(r.get('score_4h')),
-                    _esc(r.get('state_4h')), f"{_n(r.get('close_4h'))} / {_n(r.get('EE_4h'))}",
-                    _esc((r.get('last_signal_4h') or {}).get('type', '—')) + ' · ' +
-                    _esc((r.get('last_signal_4h') or {}).get('date', '—'))] for r in rows])
+def s4_momentum(f, notes):
+    m = f.get('momentum', {})
 
+    def rows_of(items, side_label):
+        return [[f"<b>{_esc(i['name'])}</b> <span class='mut'>{_esc(i['code'])}</span>",
+                 f'<span class="{"up" if i["d4h"] > 0 else "dn"}">{i["d4h"]:+.2f}</span>',
+                 _n(i.get('score_4h')),
+                 _esc(i.get('tier') or '（非持仓侧）'),
+                 _esc({1: '日线持多', -1: '日线持空', 0: '日线空仓'}.get(i.get('pos_1d'), '日线未知'))]
+                for i in items]
 
-def s3_retest(f, notes):
-    rows = f['leader_retest']
-    groups = {}
-    for r in rows:
-        if r.get('pos_4h') is None or r.get('below_EE_4h') is None:
-            label = '⚪ 证据不足（暂停修复判断）'
-        elif r.get('below_EE_4h') is True:
-            label = '🚨 4h收盘跌破4h EE'
-        elif r.get('repaired'):
-            label = '✅ 已核验平多后重新开多（仍需延续）'
-        elif r.get('reopened_long'):
-            label = '🟡 本期新开多（未满足回踩修复全部证据）'
-        elif r.get('pos_4h') == 1:
-            label = '🟡 持续持多（不等于本期重新开多）'
-        else:
-            label = '⚠️ 4h非多（尚未重新BK）'
-        groups.setdefault(label, []).append(r)
-    priority = ['🚨', '✅', '🟡', '⚠️', '⚪']
-    body = ''.join(f'<h3>{label}（{len(data)} 只）</h3>' + _state_table(data)
-                   for label, data in sorted(groups.items(), key=lambda kv: next(i for i, p in enumerate(priority) if kv[0].startswith(p))))
-    body = '<p>日线DD/EE与4h收盘/EE分列展示；历史回踩记录不代表当前仍在支撑带。评分偏负与收破EE分别判断。</p>' + body
-    return _section(3, '🔁 龙头回踩与4h状态核验', body, notes.get('3'))
-
-
-def s4_divergence(f, notes):
-    items = f['divergence']['items']
-    resist = [x for x in items if x.get('verdict') == '多头抵抗']
-    red = [x for x in items if x.get('level') == '🔴']
-    orange = [x for x in items if x.get('level') == '🟠']
-    back = [x for x in items if x.get('verdict') in ('单只预警', '待核验')]
     parts = []
-    if f['divergence']['sectors']:
-        rows = [[f"<b>{_esc(s['sector'])}</b>", _esc(s['stype']),
-                 f"{len(s['short'])} 只", "、".join(s['short']) or "—",
-                 f"{len(s['gone'])} 只", "、".join(s['gone']) or "—"]
-                for s in f['divergence']['sectors']]
-        parts.append("<h3>板块当前状态（持空 / 空仓 ≥ 2 只；不是近5日事件）</h3>"
-                     + _table(['板块', '口径', '当前持空', '明细', '当前空仓', '明细'], rows))
-    if resist:
-        parts.append("<h3>🟡 农产品「多头抵抗」判定 —— 4 条全中才算</h3>"
-                     + _table(['品种', '代码', '日线', '4h', '收盘', 'DD', 'EE', '排名'],
-                              [[f"<b>{_esc(x['name'])}</b>", _esc(x['code']), _n(x['score']),
-                                _n(x.get('score_4h')), _n(x.get('close')), _n(x.get('DD')),
-                                _n(x.get('EE')), f"#{x.get('rank') or '—'}（{_sign(x.get('rank_change'))}）"]
-                               for x in resist])
-                     + "<p>抵抗候选须同时满足：日线评分正且收盘≥DD；4h为SP后空仓、未破4h EE且评分≥−0.5；排名不下降；板块当前弱背景。候选不等于新的开多信号。</p>")
-    if red or orange:
-        rows = [[x.get('level', ''), f"<b>{_esc(x['name'])}</b>", _esc(x['code']),
-                 _esc(x.get('sector_name') or x.get('sector')), _n(x['score']), _n(x.get('score_4h')),
-                 _esc("；".join(x.get('why') or [])) or "—"]
-                for x in red + orange]
-        parts.append(f"<h3>🔴 分歧名单（含未满足抵抗条件的农产品 · {len(red) + len(orange)} 条）</h3>"
-                     + _table(['评级', '品种', '代码', '板块', '日线', '4h', '依据'], rows)
-                     + "<p>🔴 多单不持有 / 先撤；🟠 多单减半，破 EE 走；修复信号 = 4h 重新 BK。</p>")
-    if back:
-        parts.append(f"<h3>⚠️ 单只预警 / 待核验（未满足全部条件或证据不足）（{len(back)} 只）</h3>"
-                     + _state_table(back))
+    accel, decel = m.get('accel', []), m.get('decel', [])
+    if accel:
+        parts.append(f'<h3>🚀 多向加速（Δ4h ≥ +1.0 · 前 {len(accel)}）</h3>'
+                     + _table(['品种', 'Δ4h', '4h score', '当前档位（交叉印证）', '日线方向'],
+                              rows_of(accel, '多')))
+    if decel:
+        parts.append(f'<h3>📉 空向失速（Δ4h ≤ −1.0 · 前 {len(decel)}）</h3>'
+                     + _table(['品种', 'Δ4h', '4h score', '当前档位（交叉印证）', '日线方向'],
+                              rows_of(decel, '空')))
+    rm = m.get('rank_moves', [])
+    if rm:
+        parts.append('<h3>排名异动（|Δrank| ≥ 3）</h3>'
+                     + _table(['榜单', '品种', '排名', '变化', '日线 score'],
+                              [[_esc(x['side']),
+                                f"<b>{_esc(x['name'])}</b> <span class='mut'>{_esc(x['code'])}</span>",
+                                f"#{x.get('rank') or '—'}", _sign(x.get('rank_change')),
+                                _n(x.get('score'))] for x in rm]))
     if not parts:
-        parts.append("<p>当日无板块级分歧。</p>")
-    return _section(4, "⭐ 分歧严重 · 特别关注名单（简化版）", "".join(parts), notes.get('4'))
+        parts.append('<p>当日无显著动量异动。</p>')
+    return _section('四', '动量异动榜', "".join(parts), notes.get('4'))
 
 
-def _short_nature(r, data_date):
-    last = r.get('last_signal') or {}
-    tags = ['当日新开空'] if last.get('type') == 'SK' and iso_day(last.get('date')) == data_date else ['持续持空']
-    if r.get('score') is None:
-        tags.append('评分未知')
-    elif r['score'] > 0:
-        tags.append('评分已正，不等于出榜')
-    return ' · '.join(tags)
-
-
-def s5_short(f, notes):
-    rows = [r for sec in f['short_positions'].values() for r in sec]
-    rows.sort(key=lambda x: _sc(x))
-    body = _table(['品种', '代码', '板块', '日线', '性质', '收盘', 'KK', 'PP', '触压'],
-                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _esc(r.get('sector')),
-                    _n(r['score']), _esc(_short_nature(r, f['data_date'])), _n(r.get('close')), _n(r.get('KK')), _n(r.get('PP')),
-                    f"{r.get('retest_count') or 0} 次"] for r in rows])
-    return _section(5, f"看空主线（日线空头 {len(rows)} 只）", body, notes.get('5'))
-
-
-def s6_turn(f, notes):
-    A = f['turn']['A']
-    MARK = {'共振空': ('🔴', '可跟空（4h + 日线双级共振）'),
-            '已离场': ('⬜', '当前空仓，等待新的日线交易信号'),
-            '日线仍多': ('🟨', '日线仍多，短周期转折需核验'),
-            '日空 / 4h观望': ('⬜', '日线持空、4h观望，尚非双级共振'),
-            '状态待核验': ('⚪', '状态不足，暂不判断共振')}
-    parts = []
-    if A:
-        rows = [[MARK.get(x['verdict'], ('⚪', ''))[0], f"<b>{_esc(x['name'])}</b>", _esc(x['code']),
-                 _n(x['score']), _esc(_md(x.get('signal_date'))), _n(x.get('score_1d')),
-                 _n(x.get('EE_1d')), _esc(MARK.get(x['verdict'], ('', '—'))[1])]
-                for x in A]
-        parts.append("<h3>A. 4h 多转空 → 日线裁决</h3>"
-                     + _table(['', '品种', '代码', '4h', '信号日', '日线', '日线 EE', '动作'], rows))
-    B = f['turn']['B']
-    if B:
-        rows = [[f"<b>{_esc(x['name'])}</b>", _esc(x['code']), _n(x['score']),
-                 _esc(_md(x.get('signal_date'))), _esc(x.get('pos_1d')), _esc(x.get('pos_4h'))] for x in B]
-        parts.append("<h3>B. 反向事件（历史转折需与当前4h持仓分别核验）</h3>"
-                     + _table(['品种', '代码', '4h', '信号日', '日线持仓', '4h持仓'], rows))
-    for nm, arr in f['turn']['warnings'].items():
-        if arr:
-            parts.append(f"<p>{_esc(nm)}：{_esc(_names(arr, 20))}</p>")
-    if not parts:
-        parts.append("<p>当日无 4h 转折信号。</p>")
-    return _section(6, "阶段性转折（简化版 · 只留两条主线 + 一个反向段）",
-                    "".join(parts), notes.get('6'))
-
-
-def s7_pressure(f, notes):
-    rows = f['bear_pressure']
-    if not rows:
-        return _section(7, "熊头遇压（重点 👀）", "<p>当日无熊头触压品种。</p>", notes.get('7'))
-    body = _table(['品种', '代码', '日线', '4h', '收盘', 'KK', 'PP', '触压', '距 KK'],
-                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
-                    _n(r.get('score_4h')), _n(r.get('close')), _n(r.get('KK')),
-                    _n(r.get('PP')), f"{r.get('retest_count') or 0} 次",
-                    f"{_n(_gap(r.get('close'), r.get('KK')))}%"] for r in rows])
-    return _section(7, f"熊头遇压（重点 👀 · {len(rows)} 只）", body, notes.get('7'))
-
-
-def s8_tips(f, narrative, report_date=None):
-    tips = (narrative or {}).get('action_tips') or fallback_tips(f)
+def s5_tips(f, narrative, report_date=None):
+    tips = (narrative or {}).get('action_tips') or fallback_tips(f, report_date)
     lis = "".join(f"<li>{_esc(t)}</li>" for t in tips)
-    return _section(8, f"{_esc(_md(report_date or next_report_date(f)))} 操作提示（最简版）",
+    return _section('五', f"{_esc(_md(report_date or next_report_date(f)))} 操作提示",
                     f'<ol class="oplist">{lis}</ol>')
 
 
-def s9_radar(f, notes):
-    parts = []
-    for side, lab, mark in (('long_trend', '多头榜', '🚀'), ('short_trend', '空头榜', '🆙')):
-        rows = f['rank_radar'].get(side, [])
-        risen = [r for r in rows if r.get('risen')]
-        fallen = [r for r in rows if r.get('fallen')]
-        new = [r for r in rows if r.get('rank_status') == 'new']
-        for sub, data in ((f"{mark} 新贵（排名显著上升）", risen),
-                          ("📉 掉队（排名显著下滑）", fallen),
-                          ("🆕 新入榜", new)):
-            if not data:
-                continue
-            parts.append(f"<h3>{lab} · {sub}（{len(data)} 只）</h3>"
-                         + _table(['品种', '代码', '日线', '排名', '变化', '7 日轨迹', '解读边界'],
-                                  [[f"<b>{_esc(r['name'])}</b>", _esc(r['code']), _n(r['score']),
-                                    f"#{r.get('rank') or '—'}", _sign(r.get('rank_change')),
-                                    _esc(" ".join(str(x.get('rank')) if x.get('rank') is not None else '-'
-                                                  for x in (r.get('rank_history') or [])[-7:])), _esc(r.get('rank_note'))]
-                                   for r in data]))
-    if not parts:
-        parts.append("<p>当日无显著排名变动（|变化| ≥ 3 视为显著）。</p>")
-    return _section(9, "动量排名雷达 · 新贵与掉队（补充信号 👀）", "".join(parts), notes.get('9'))
+def methodology_note(f):
+    """尾部口径说明：固定文案（v6 §3 末节）。"""
+    c = f.get('criteria', {})
+    lead_1d, lead_4h = c.get('LEAD_1D', 4.5), c.get('LEAD_4H', 1.0)
+    d4h_sig, new_strong = c.get('D4H_SIG', 1.0), c.get('NEW_STRONG_4H', 1.0)
+    return _section('尾', '口径说明', f"""
+<ul>
+<li><b>四档定义（多头侧，空头镜像）</b>：🥇绝对龙头 = 日线多 ＋ 日线评分 ≥ {lead_1d} ＋ 4h 在多头桶 ＋ 4h 评分 ≥ {lead_4h}；
+🔴危险分歧 = 日线多 ＋ 4h 偏弱（掉出多头桶或 4h 评分 &lt; 0）＋ Δ4h ≤ −{d4h_sig}；
+🚀新贵 = 日线多 ＋ Δ4h ≥ +{d4h_sig} ＋ 4h 评分 &gt; {new_strong}（负值区回抽不算新贵）；
+🟡回调 = 日线多 ＋ 日线评分 ≥ {lead_1d} ＋ Δ4h &gt; −{d4h_sig}。四档互斥，一只品种一天只属于一个档，按优先级取档。</li>
+<li><b>🟢 4h 蓄势池</b>：⚪ 未入档中 4h 已在趋势桶且 4h 评分越过 ±{new_strong} 者；蓄势而非启动，日线确认后提级，4h 掉桶出池。</li>
+<li><b>Δ4h 口径</b>：Δ4h = 今日日盘收盘 4h 评分 − 前一交易日日盘收盘 4h 评分（4h 评分 = 收盘对 MA7 偏离%）。前一交易日数据缺失时 Δ 栏标「—」，依赖环比的档位暂定并加 ※。</li>
+<li><b>破位备注</b>：多头侧 = 4h 收盘跌破 4h EE；空头侧 = 4h 收盘上破 4h PP。仅作备注用词，不单独设档；4h 评分转正/转负不等于重新入桶。</li>
+<li><b>塌陷假象</b>：空头榜排名上升是评分派生的相对名次变化，不能解释为资金流入或主动走强。</li>
+<li><b>增仓预留</b>：第三要素「增减仓」数据源暂未接入；接入后日线增仓 = 对当侧趋势的增强确认，只作加减分项，不改变四档定义。</li>
+<li><b>数据源</b>：{_esc(DASHBOARD_URL)}（扫描生成于 {_esc(f.get('created_at'))}）。报告日默认下一工作日，未内置节假日日历。</li>
+</ul>""")
 
 
 def load_goldman_appendix(data_date, directory=None):
@@ -561,20 +578,12 @@ def render_goldman_appendix(appendix):
     )
 
 
-def _sc(r):
-    return (r or {}).get('score') or 0
-
-
-def _gap(close, ref):
-    return (close - ref) / ref * 100 if (close and ref) else None
-
-
 def next_report_date(f):
     d = datetime.strptime(f['data_date'][:10], "%Y-%m-%d").date()
     return _next_weekday(d).isoformat()
 
 
-# ---------------------------------------------------------------- 样式（对齐资料库成品）
+# ---------------------------------------------------------------- 样式（v6 §3.1 固定类名）
 CSS = """
   :root{
     --bg:#f4f6f9; --card:#ffffff; --line:#e6e9ef;
@@ -583,6 +592,7 @@ CSS = """
     --green:#16855a; --green-bg:#edfdf4;
     --amber:#b45309; --amber-bg:#fffaf0;
     --blue:#1d4ed8; --blue-bg:#eff5ff;
+    --gold:#a16207; --gold-bg:#fffbeb;
     --navy:#25456f;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -608,21 +618,7 @@ CSS = """
 
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-top:16px;box-shadow:0 1px 3px rgba(28,36,48,.05)}
   h2{font-size:19px;font-weight:800;color:var(--navy);margin-bottom:14px;padding-bottom:9px;border-bottom:2px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  h2 .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:var(--navy);color:#fff;font-size:14px;font-weight:800;flex:0 0 auto}
-  .fold-section{padding:0;overflow:hidden}
-  .fold-section>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 22px;cursor:pointer;list-style:none}
-  .fold-section>summary::-webkit-details-marker{display:none}
-  .fold-section>summary:hover{background:#f8fafc}
-  .fold-section>summary:focus-visible{outline:3px solid var(--blue);outline-offset:-3px;border-radius:13px}
-  .fold-section>summary h2{margin:0;padding:0;border:0;flex:1;min-width:0;flex-wrap:nowrap;align-items:flex-start;font-size:17px}
-  .fold-section>summary .n{margin-top:1px}
-  .fold-label{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;font-size:12px;font-weight:600;color:var(--blue)}
-  .fold-arrow{font-size:19px;line-height:1;display:inline-block}
-  .fold-hide,.fold-section[open] .fold-show{display:none}
-  .fold-section[open] .fold-hide{display:inline}
-  .fold-section[open] .fold-arrow{transform:rotate(180deg)}
-  .fold-section[open]>summary{border-bottom:1px solid var(--line)}
-  .fold-body{padding:14px 22px 20px}
+  h2 .n{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border-radius:8px;background:var(--navy);color:#fff;font-size:14px;font-weight:800;flex:0 0 auto}
   h3{font-size:15.5px;font-weight:800;margin:18px 0 9px;color:var(--ink);display:flex;align-items:center;gap:7px}
   h3:first-of-type{margin-top:4px}
   p{font-size:14.5px;color:var(--ink2);margin-bottom:9px}
@@ -646,27 +642,35 @@ CSS = """
   .mut{color:var(--ink3)}
   .nowrap{white-space:nowrap}
 
-  .bdg{display:inline-block;padding:1.5px 8px;border-radius:999px;font-size:11.8px;font-weight:800;white-space:nowrap}
-  .bdg.r{background:var(--red-bg);color:var(--red-d);border:1px solid #fbd5d1}
-  .bdg.g{background:var(--green-bg);color:var(--green);border:1px solid #c7f0dd}
-  .bdg.a{background:var(--amber-bg);color:var(--amber);border:1px solid #fce3b4}
-  .bdg.y{background:#fffbeb;color:#a16207;border:1px solid #fde68a}
-  .bdg.b{background:var(--blue-bg);color:var(--blue);border:1px solid #cddffb}
-  .bdg.n{background:#f1f3f7;color:var(--ink3);border:1px solid #e2e6ee}
+  .bdg2{display:inline-block;padding:1.5px 8px;border-radius:999px;font-size:11.8px;font-weight:800;white-space:nowrap}
+  .bdg2.lead{background:var(--gold-bg);color:var(--gold);border:1px solid #fde68a}
+  .bdg2.pull{background:#fffbeb;color:#a16207;border:1px solid #fde68a}
+  .bdg2.danger{background:var(--red-bg);color:var(--red-d);border:1px solid #fbd5d1}
+  .bdg2.bear{background:#f3e8ff;color:#7c3aed;border:1px solid #ddd0f5}
+  .bdg2.fresh{background:var(--green-bg);color:var(--green);border:1px solid #c7f0dd}
+  .bdg2.flat{background:#f1f3f7;color:var(--ink3);border:1px solid #e2e6ee}
 
-  .ov{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px}
-  .ovc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-  .ovc .ot{font-size:13px;font-weight:800;color:var(--navy);margin-bottom:9px;letter-spacing:.3px}
-  .ovrow{display:flex;justify-content:space-between;align-items:center;font-size:13.4px;padding:4px 0;border-bottom:1px dashed #eef1f6}
-  .ovrow:last-child{border-bottom:none}
-  .ovrow span:first-child{color:var(--ink3)}
-  .ovrow span:last-child{font-weight:800;color:var(--ink)}
+  .oneline{background:linear-gradient(135deg,#fff8f0,#fff);border:1px solid #fde68a;border-left:5px solid var(--gold);border-radius:12px;padding:15px 18px;margin-top:14px;font-size:14.6px;color:var(--ink);line-height:1.75}
+  .oneline b{color:var(--gold)}
 
-  .oneline{background:linear-gradient(135deg,#fff8f7,#fff);border:1px solid #fbd5d1;border-left:5px solid var(--red);border-radius:12px;padding:15px 18px;margin-top:14px;font-size:14.6px;color:var(--ink);line-height:1.75}
-  .oneline b{color:var(--red-d)}
-
-  .note{background:#f8fafc;border:1px dashed #d8dfe9;border-radius:10px;padding:11px 14px;font-size:13.2px;color:var(--ink2);margin:10px 0}
+  .note{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:11px 14px;font-size:13.2px;color:var(--ink2);margin:10px 0}
   .note b{color:var(--ink)}
+
+  .sigblock{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .sigblock .ot{font-size:13px;font-weight:800;color:var(--navy);margin-bottom:9px;letter-spacing:.3px}
+  .ovrow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13.4px;padding:4px 0;border-bottom:1px dashed #eef1f6}
+  .ovrow:last-child{border-bottom:none}
+  .ovrow span:first-child{color:var(--ink3);flex:0 0 auto}
+  .ovrow span:last-child{color:var(--ink)}
+
+  .judge-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  .judge-card{background:var(--card);border:1px solid var(--line);border-left-width:5px;border-radius:12px;padding:14px 16px}
+  .judge-card.j-red{border-left-color:var(--red)}
+  .judge-card.j-gold{border-left-color:var(--gold)}
+  .judge-card.j-green{border-left-color:var(--green)}
+  .judge-card .jt{font-size:14.5px;font-weight:800;color:var(--ink);margin-bottom:8px}
+  .judge-card .jf,.judge-card .ja{font-size:13.4px;color:var(--ink2);margin-bottom:6px;line-height:1.7}
+  .judge-card .jl{display:inline-block;background:#f0f3f8;color:var(--navy);border-radius:6px;padding:0 7px;font-size:11.5px;font-weight:800;margin-right:7px}
 
   .oplist{counter-reset:o;list-style:none;margin:0}
   .oplist li{counter-increment:o;position:relative;padding:9px 0 9px 38px;border-bottom:1px dashed #eef1f6;font-size:14.2px;color:var(--ink2);line-height:1.7}
@@ -676,24 +680,20 @@ CSS = """
   .goldman-appendix img{display:block;width:100%;height:auto;margin:10px auto 20px;border-radius:10px;background:#0e1e33}
   .goldman-appendix h3{margin-top:18px}
 
-  footer{margin-top:22px;padding:14px 16px;background:#eef1f6;border-radius:12px;font-size:12.6px;color:var(--ink3);line-height:1.7}
+  footer,.foot{margin-top:22px;padding:14px 16px;background:#eef1f6;border-radius:12px;font-size:12.6px;color:var(--ink3);line-height:1.7}
 
   @media(max-width:820px){
-    .ov{grid-template-columns:1fr}
+    .judge-grid{grid-template-columns:1fr}
     h1{font-size:21px}
     .card{padding:16px 15px}
-    .fold-section{padding:0}
-    .fold-section>summary{padding:16px 15px;gap:10px}
-    .fold-section>summary h2{font-size:16px}
-    .fold-body{padding:12px 15px 16px}
     header{padding:20px 18px 18px}
   }
 """
 
 
 def render_footer(f):
-    return (f"<footer>口径：日线定趋势、4h 定节奏、板块定氛围、排名定动能。"
-            f"持仓、价格与评分分开核验；SP平多、BP平空；4h破位仅指4h收盘低于4h EE，评分偏负不等于破位；回踩修复需核验本期平多后重新开多；当前持多不等于本期修复。报告日默认下一工作日，未内置节假日日历。"
+    return (f"<footer>口径：日线定趋势、4h 定节奏；趋势 × 动量两要素，四档互斥。"
+            f"持仓、价格与评分分开核验；SP平多、BP平空；破位备注：多头侧 4h 收破 EE、空头侧 4h 上破 PP；评分偏负不等于破位。报告日默认下一工作日，未内置节假日日历。"
             f"数据源：{_esc(DASHBOARD_URL)} —— 扫描生成于 {_esc(f.get('created_at'))}，"
             f"数据基准 {_esc(f['data_date'])}，对比 {_esc(f['prev_date'])}。</footer>")
 
@@ -710,15 +710,13 @@ def render_html(f, narrative, report_date=None, goldman_appendix=None) -> str:
         '<div class="note">' + _esc('；'.join(f.get('quality_notes') or [])) + '</div>' if f.get('quality_notes') else '',
         render_oneline(f, narrative),
         render_cautions(f, narrative),
-        s1_overview(f, notes),
-        s2_leaders(f, notes),
-        s3_retest(f, notes),
-        s4_divergence(f, notes),
-        s5_short(f, notes),
-        s6_turn(f, notes),
-        s7_pressure(f, notes),
-        s8_tips(f, narrative, report_date),
-        s9_radar(f, notes),
+        s1_core(f, narrative, notes),
+        s2_long(f, notes),
+        s3_short(f, notes),
+        s3b_pool(f, notes),
+        s4_momentum(f, notes),
+        s5_tips(f, narrative, report_date),
+        methodology_note(f),
         render_goldman_appendix(goldman_appendix),
         render_footer(f),
     ])
@@ -736,6 +734,10 @@ def validate_report_date(facts, report_date):
     return report_date
 
 
+# 叙事 section_notes 的合法节键（v6：一=核心判断走 judge_cards，五=操作提示走 action_tips）
+NOTE_KEYS = {'1', '2', '3', 'pool', '4'}
+
+
 def validate_narrative(facts, narrative, report_date):
     if narrative is None:
         return
@@ -743,31 +745,42 @@ def validate_narrative(facts, narrative, report_date):
         raise ValueError('叙事必须是JSON对象')
     if narrative.get('report_date') != report_date or narrative.get('input_hash') != facts.get('input_hash') or not facts.get('input_hash'):
         raise ValueError('叙事日期或输入指纹不匹配，需依据当前扫描事实重写')
+
     def text(value):
         if not isinstance(value, str) or not value.strip() or len(value) > 4000:
             raise ValueError('叙事字段必须为非空纯文本，最长4000字')
+
     for field in ('tone', 'one_liner', 'source'):
         if field in narrative:
             text(narrative[field])
     notes = narrative.get('section_notes', {})
-    if not isinstance(notes, dict) or set(notes) - set('123456789'):
-        raise ValueError('section_notes 必须使用1至9节号')
+    if not isinstance(notes, dict) or set(notes) - NOTE_KEYS:
+        raise ValueError('section_notes 必须使用 v6 节键：1 / 2 / 3 / pool / 4')
     for value in notes.values():
         text(value)
+    cards = narrative.get('judge_cards', [])
+    if not isinstance(cards, list):
+        raise ValueError('judge_cards 必须是数组')
+    for card in cards:
+        if not isinstance(card, dict):
+            raise ValueError('judge_cards 元素必须是对象')
+        for field in ('title', 'fact', 'action'):
+            text(card.get(field))
     for field in ('action_tips', 'cautions'):
         values = narrative.get(field, [])
         if not isinstance(values, list):
             raise ValueError(field + ' 必须是数组')
         for value in values:
             if field == 'cautions' and isinstance(value, dict):
-                text(value.get('title')); text(value.get('body'))
+                text(value.get('title'))
+                text(value.get('body'))
             else:
                 text(value)
 
 
 def publish_report(facts, narrative=None, report_date=None, output_dir=None,
                    goldman_appendix=None):
-    if facts.get('scan_version') != 2 or not facts.get('input_hash'):
+    if facts.get('scan_version') != 3 or not facts.get('input_hash'):
         raise ValueError('请先用新版 scan_report 重新生成事实')
     root = Path(output_dir) if output_dir is not None else REPORTS_DIR
     day = validate_report_date(facts, report_date or next_report_date(facts))
@@ -816,7 +829,7 @@ def rerender_report_for_data_date(data_date, reports_dir=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="期货看板每日总结 · HTML 渲染器")
+    ap = argparse.ArgumentParser(description="期货看板每日总结 · HTML 渲染器（v6 五节结构）")
     ap.add_argument("--date", help="数据日期 YYYY-MM-DD（默认取最新扫描产物）")
     ap.add_argument("--report-date", help="报告日期 YYYY-MM-DD（默认=数据日的下一工作日）")
     args = ap.parse_args()

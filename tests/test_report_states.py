@@ -1,72 +1,84 @@
-"""v5纠偏的反例：状态不由评分推断，缺证据不补成事实。"""
+"""数据诚信守卫的反例（v6 保留项）：状态不由评分推断，缺证据不补成事实。"""
 import unittest
 from backend.pipeline import scan_report as scan, summary_render as render
-from tests.test_scan_report import _row
+from tests.test_scan_report import _row, _r4
 
 
 class ReportStateTests(unittest.TestCase):
     def test_negative_momentum_above_support_is_not_break(self):
+        """评分偏负不等于破位；破位只看 4h 收盘与 4h EE"""
         state = scan.state4(_row('sc2610', -2, 101, EE=100))
         self.assertEqual(state['tier'], '4h动能偏负')
         self.assertFalse(state['below_EE_4h'])
 
     def test_positive_momentum_below_support_is_break(self):
+        """评分为正也可能收破 EE；破位品种进不了龙头档"""
         state = scan.state4(_row('sc2610', 2, 99, EE=100))
         self.assertEqual(state['tier'], '4h破位')
-        self.assertFalse(scan._leaders({'sc':_row('sc2610',12,110)},
-                         {'sc2610':_row('sc2610',2,99,EE=100)})['dual'])
-
-    def test_same_timeframe_price_and_equality(self):
-        p={'sc':_row('sc2610',12,80,EE=90)}
-        four={'sc2610':_row('sc2610',-1,100,EE=100)}
-        row=scan._long_4h_tiers(p,four)['4h动能偏负'][0]
-        self.assertFalse(row['below_EE_4h'])
-        self.assertEqual(row['EE_4h'],100)
+        P1 = {'sc': _row('sc2610', 12, 110)}
+        R4 = {'sc2610': _r4('sc2610', 2, close=99.0, ee=100.0)}
+        # 破位不阻止入档（v6 破位只是备注），但备注必须保留
+        row = scan._four_tiers(P1, R4, {}, side=1)['lead'][0]
+        self.assertTrue(row['breach_4h'])
+        self.assertIn('破位', row['reason'])
 
     def test_missing_price_is_not_no_break(self):
-        self.assertIsNone(scan.state4(_row('sc2610',2,101))['below_EE_4h'])
+        """缺价格记未知，不补成「未破」"""
+        self.assertIsNone(scan.state4(_row('sc2610', 2, 101))['below_EE_4h'])
 
     def test_bp_is_close_short_not_close_long(self):
-        row=dict(_row('m2701',2,101,EE=100,pos=0),last={'type':'BP'})
-        self.assertEqual(scan.state4(row)['position_4h'],'平空后空仓')
+        """BP 是平空不是平多"""
+        row = dict(_row('m2701', 2, 101, EE=100, pos=0), last={'type': 'BP'})
+        self.assertEqual(scan.state4(row)['position_4h'], '平空后空仓')
 
-    def test_flat_high_score_remains_in_ended_table(self):
-        p={'bc':_row('bc2609',-0.1,101,EE=100)}
-        four={'bc2609':dict(_row('bc2609',2,101,EE=100,pos=0),last={'type':'SP'})}
-        tiers=scan._long_4h_tiers(p,four)
-        self.assertEqual(tiers['4h空仓'][0]['code'],'bc')
-        html=render.s2_leaders(dict(leaders=dict(dual=[],absolute=[],quasi=[]),long_4h_tiers=tiers),{})
-        self.assertIn('平多后空仓',html)
+    def test_missing_scores_not_filled_with_zero(self):
+        """未知评分不补零：1d 未知 → 龙头/回调门槛不成立；4h 未知 → Δ 未知"""
+        P1 = {'rb': _row('rb2610', None, 100.0)}
+        R4 = {'rb2610': _r4('rb2610', 1.5)}
+        tiers = scan._four_tiers(P1, R4, {}, side=1)
+        self.assertEqual(tiers['lead'], [])
+        row = tiers['flat'][0]
+        self.assertIsNone(row['score_1d'])
+        self.assertTrue(row['provisional'])
 
-    def market(self):
-        p={'m':_row('m2701',3,101,DD=100,EE=99),
-           'y':_row('y2701',-1,99,pos=-1),'OI':_row('OI611',-1,99,pos=-1)}
-        four={'m2701':dict(_row('m2701',0.1,101,EE=100,pos=0),last={'type':'SP'})}
-        return p,four
+    def test_pool_requires_bucket_and_level(self):
+        """蓄势池双条件：4h 在桶 且 水平越过 ±1.0；缺一即真·未入档"""
+        P1 = {'rb': _row('rb2610', 2.0, 100.0)}
+        R4 = {'rb2610': _r4('rb2610', 1.5, in_bucket=False)}   # 掉桶
+        tiers = scan._four_tiers(P1, R4, {}, side=1)
+        self.assertEqual(scan._pool_rows(tiers['flat'], side=1), [])
 
-    def test_resistance_rejects_short_bp_and_break(self):
-        for changes in [dict(pos=-1),dict(last={'type':'BP'}),dict(close=99)]:
-            p,four=self.market();four['m2701'].update(changes)
-            self.assertNotEqual(scan._divergence(p,four,set())['items'][0]['verdict'],'多头抵抗')
-
-    def test_weak_daily_positive_four_hour_still_divergence(self):
-        p={'bc':_row('bc2609',3,101,DD=100,EE=99),
-           'cu':_row('cu2609',-1,99,pos=-1),'al':_row('al2610',-1,99,pos=-1)}
-        four={'bc2609':_row('bc2609',2,101,EE=100,pos=0)}
-        self.assertEqual(scan._divergence(p,four,set())['items'][0]['verdict'],'分歧')
-
-    def test_broken_reopened_position_is_not_repaired(self):
-        r=dict(_row('eg2610',2,99,EE=100),last={'type':'BK','date':'2026-09-15'},
-               recent_signals=[{'type':'SP','date':'2026-09-14'},{'type':'BK','date':'2026-09-15'}])
-        result=scan._attach_4h([dict(key='eg2610',retest_dates=['2026-09-14'])],{'eg2610':r},'2026-09-14')[0]
-        self.assertTrue(result['reopened_long'])
-        self.assertFalse(result['repaired'])
-
-    def test_positive_short_score_does_not_imply_bucket_exit(self):
-        row=dict(key='c2701',score=1,close=101,rank=1,rank_change=4)
-        result=scan._rank_radar({'buckets':{'short_trend':[row]}})['short_trend'][0]
-        self.assertTrue(result['risen'])
-        self.assertIn('不代表自动出榜',result['rank_note'])
+    def test_render_html_balanced_tags(self):
+        """v6 §4.5：HTML 开闭标签计数必须配对"""
+        import re
+        P1 = {'rb': _row('rb2610', 5.0, 100.0)}
+        R4 = {'rb2610': _r4('rb2610', 1.5)}
+        tiers = scan._four_tiers(P1, R4, {'rb2610': 0.5}, side=1)
+        f = {'rules_version': render.RULES_VERSION, 'scan_version': 3,
+             'data_date': '2026-09-15', 'prev_date': '2026-09-14',
+             'created_at': '2026-09-15T18:00:00', 'input_hash': 'x',
+             'generated_at': {'1d': '2026-09-15T16:00:00', '4h': '2026-09-15T15:36:00'},
+             'overview': {'1d': {'long_trend': 1, 'short_trend': 0, 'long_to_short': 0,
+                                 'long_to_short_warning': 0, 'short_to_long': 0,
+                                 'short_to_long_warning': 0, 'short_pressure_warning': 0,
+                                 'long_support_warning': 0},
+                          '4h': {'long_trend': 1, 'short_trend': 0, 'long_to_short': 0,
+                                 'long_to_short_warning': 0, 'short_to_long': 0,
+                                 'short_to_long_warning': 0, 'short_pressure_warning': 0,
+                                 'long_support_warning': 0},
+                          'prev_1d': None, 'prev_4d': None, 'prev_4h': None},
+             'signal_actions': [], 'tiers_long': tiers,
+             'tiers_short': {t: [] for t in scan.TIER_ORDER},
+             'pool': {'long': [], 'short': []},
+             'momentum': {'accel': [], 'decel': [], 'rank_moves': []},
+             'key_levels': [], 'coverage': {}}
+        body = render.render_html(f, None, report_date='2026-09-16')
+        for tag in ('table', 'tr', 'td', 'th', 'div', 'h2', 'h3', 'ul', 'li', 'ol'):
+            self.assertEqual(len(re.findall(rf'<{tag}[\s>]', body)),
+                             len(re.findall(rf'</{tag}>', body)), tag)
+        self.assertIn('judge-card', body)
+        self.assertIn('蓄势池', body)
+        self.assertIn('口径说明', body)
 
 
 if __name__ == '__main__':
