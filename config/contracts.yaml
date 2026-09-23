@@ -7,12 +7,12 @@
 # 下次重跑生成器前，应同步更新对应的池 CSV，避免覆盖这些换月结果。
 pool_csv: config/国内期货主力合约精简版_63品种_20260728.csv
 contracts:
-- symbol: ao2610.SHF
+- symbol: ao2701.SHF
   source: ricequant
   name: 氧化铝
   category: 有色金属
   exchange: SHFE
-- symbol: pb2610.SHF
+- symbol: pb2611.SHF
   source: ricequant
   name: 铅
   category: 有色金属
@@ -22,12 +22,12 @@ contracts:
   name: 铜
   category: 有色金属
   exchange: SHFE
-- symbol: al2610.SHF
+- symbol: al2611.SHF
   source: ricequant
   name: 铝
   category: 有色金属
   exchange: SHFE
-- symbol: zn2610.SHF
+- symbol: zn2611.SHF
   source: ricequant
   name: 锌
   category: 有色金属
@@ -37,12 +37,12 @@ contracts:
   name: 锡
   category: 有色金属
   exchange: SHFE
-- symbol: ni2610.SHF
+- symbol: ni2611.SHF
   source: ricequant
   name: 镍
   category: 有色金属
   exchange: SHFE
-- symbol: br2610.SHF
+- symbol: br2611.SHF
   source: ricequant
   name: 丁二烯橡胶
   category: 能源化工
@@ -57,17 +57,17 @@ contracts:
   name: 燃料油
   category: 能源化工
   exchange: SHFE
-- symbol: bu2610.SHF
+- symbol: bu2611.SHF
   source: ricequant
   name: 石油沥青
   category: 能源化工
   exchange: SHFE
-- symbol: ag2610.SHF
+- symbol: ag2612.SHF
   source: ricequant
   name: 白银
   category: 贵金属
   exchange: SHFE
-- symbol: au2610.SHF
+- symbol: au2612.SHF
   source: ricequant
   name: 黄金
   category: 贵金属
@@ -77,32 +77,32 @@ contracts:
   name: 纸浆
   category: 轻工
   exchange: SHFE
-- symbol: ss2610.SHF
+- symbol: ss2611.SHF
   source: ricequant
   name: 不锈钢
   category: 黑色金属
   exchange: SHFE
-- symbol: hc2610.SHF
+- symbol: hc2701.SHF
   source: ricequant
   name: 热轧卷板
   category: 黑色金属
   exchange: SHFE
-- symbol: rb2610.SHF
+- symbol: rb2701.SHF
   source: ricequant
   name: 螺纹钢
   category: 黑色金属
   exchange: SHFE
-- symbol: lu2610.INE
+- symbol: lu2611.INE
   source: ricequant
   name: 低硫燃料油
   category: 能源
   exchange: INE
-- symbol: sc2610.INE
+- symbol: sc2611.INE
   source: ricequant
   name: 原油
   category: 能源
   exchange: INE
-- symbol: nr2610.INE
+- symbol: nr2611.INE
   source: ricequant
   name: 20号胶
   category: 能源化工
@@ -152,17 +152,17 @@ contracts:
   name: 豆粕
   category: 农产品
   exchange: DCE
-- symbol: jd2610.DCE
+- symbol: jd2611.DCE
   source: ricequant
   name: 鸡蛋
   category: 农产品
   exchange: DCE
-- symbol: eg2610.DCE
+- symbol: eg2611.DCE
   source: ricequant
   name: 乙二醇
   category: 化工
   exchange: DCE
-- symbol: bz2610.DCE
+- symbol: bz2611.DCE
   source: ricequant
   name: 纯苯
   category: 化工
@@ -182,12 +182,12 @@ contracts:
   name: 聚氯乙烯(PVC)
   category: 化工
   exchange: DCE
-- symbol: eb2610.DCE
+- symbol: eb2611.DCE
   source: ricequant
   name: 苯乙烯
   category: 化工
   exchange: DCE
-- symbol: pg2610.DCE
+- symbol: pg2611.DCE
   source: ricequant
   name: 液化石油气
   category: 能源
@@ -242,17 +242,17 @@ contracts:
   name: 花生
   category: 农产品
   exchange: CZCE
-- symbol: OI611.CZC
+- symbol: OI701.CZC
   source: ricequant
   name: 菜籽油
   category: 农产品
   exchange: CZCE
-- symbol: RM611.CZC
+- symbol: RM701.CZC
   source: ricequant
   name: 菜粕
   category: 农产品
   exchange: CZCE
-- symbol: AP610.CZC
+- symbol: AP701.CZC
   source: ricequant
   name: 鲜苹果
   category: 农产品
@@ -282,17 +282,17 @@ contracts:
   name: 烧碱
   category: 化工
   exchange: CZCE
-- symbol: PR610.CZC
+- symbol: PR611.CZC
   source: ricequant
   name: 瓶片
   category: 化工
   exchange: CZCE
-- symbol: MA610.CZC
+- symbol: MA701.CZC
   source: ricequant
   name: 甲醇
   category: 化工
   exchange: CZCE
-- symbol: PF610.CZC
+- symbol: PF611.CZC
   source: ricequant
   name: 短纤
   category: 化工
