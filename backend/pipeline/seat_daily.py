@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""席位追踪每日编排：抓数 → 兼容产物 → 高盛合约 → HTML 日报。
+"""席位追踪每日编排：抓数 → 兼容产物 → 高盛合约 → HTML 日报 → 上传 OSS。
 
     python -m backend.pipeline.seat_daily                  # 最近工作日
     python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日
 
 会员持仓数据每交易日收盘后约 17:30 更新，建议 18:00 之后执行（服务器 crontab 已配）。
 若接口尚未更新到目标日，自动以实际最新交易日出图出文，不产生错位归档。
-抓数失败退出码 1（阻断）；DeepSeek 或高盛附录失败仅警告，不阻断既有产物。
+抓数失败退出码 1（阻断）；DeepSeek、高盛附录或 OSS 上传失败仅警告，不阻断既有产物。
 """
 from __future__ import annotations
 
@@ -48,12 +48,12 @@ def main(argv=None):
     csv = SEAT_DIR / f"seat_data_{target}.csv"
     if csv.exists():
         df = pd.read_csv(csv, dtype={"trade_date": str})
-        print(f"[1/5] 缓存命中: {csv}（{len(df)} 行）")
+        print(f"[1/6] 缓存命中: {csv}（{len(df)} 行）")
         source_path = SEAT_DIR / f"seat_sources_{target}.json"
         source_manifest = (json.loads(source_path.read_text(encoding="utf-8"))
                            if source_path.exists() else None)
     else:
-        print(f"[1/5] 抓取 {start} ~ {target} 动态商品池会员持仓…")
+        print(f"[1/6] 抓取 {start} ~ {target} 动态商品池会员持仓…")
         rows, source_manifest = fetch_all(start, target, return_manifest=True)
         if not rows:
             sys.exit("[错误] 未抓到任何数据")
@@ -67,7 +67,7 @@ def main(argv=None):
         else:
             df.to_csv(csv, index=False)
             atomic_json(SEAT_DIR / f"seat_sources_{effective}.json", source_manifest)
-            print(f"[1/5] 已保存 {csv}（{len(df)} 行）")
+            print(f"[1/6] 已保存 {csv}（{len(df)} 行）")
     df["trade_date"] = df["trade_date"].astype(str)
     trade_date = str(df["trade_date"].max())
     prev = prev_trade_date(df, trade_date)
@@ -78,13 +78,13 @@ def main(argv=None):
     setup_font()
     png = SEAT_DIR / f"seat_direction_{trade_date}.png"
     render(df, trade_date, prev, png)
-    print(f"[2/5] 兼容方向图: {png}")
+    print(f"[2/6] 兼容方向图: {png}")
 
     # ---- 3. 详情 JSON + AI 解读（可缺省）----
     detail = build_detail(df, trade_date, prev)
     json_path = SEAT_DIR / f"seat_detail_{trade_date}.json"
     atomic_json(json_path, detail)
-    print(f"[3/5] 兼容详情 JSON: {json_path}")
+    print(f"[3/6] 兼容详情 JSON: {json_path}")
 
     # ---- 4. 高盛主/次合约净持仓图 + 已发布日报原子重渲染（失败不阻断） ----
     try:
@@ -95,9 +95,9 @@ def main(argv=None):
         data_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
         report_path = rerender_report_for_data_date(data_date)
         if report_path:
-            print(f"[4/5] 高盛主次合约附录已写入技术日报: {report_path}")
+            print(f"[4/6] 高盛主次合约附录已写入技术日报: {report_path}")
         else:
-            print("[4/5] 高盛主次合约图已生成；尚无匹配技术日报")
+            print("[4/6] 高盛主次合约图已生成；尚无匹配技术日报")
     except Exception as exc:  # noqa: BLE001 - 附录失败不能破坏原席位日更
         print(f"[警告] 高盛主次合约附录生成失败: {exc!r}；保留既有日报和席位产物")
 
@@ -148,10 +148,18 @@ def main(argv=None):
             f"# 席位分歧分析 {trade_date}\n\n{narrative['overall_summary']['text']}\n\n"
             f"{notes}\n\n## 风险提示\n\n{risks}\n",
         )
-        print(f"[5/5] HTML 日报: {html_path}")
-        print(f"[5/5] 审计 JSON: {report_json}")
+        print(f"[5/6] HTML 日报: {html_path}")
+        print(f"[5/6] 审计 JSON: {report_json}")
     except Exception as exc:  # noqa: BLE001 - HTML 附加功能不破坏原日更
         print(f"[警告] 席位 HTML 日报生成失败: {exc!r}；保留既有席位产物")
+
+    # ---- 6. 上传 OSS（futures-hub 看板归档；失败不阻断本地产物） ----
+    try:
+        from backend.pipeline.oss_upload import upload_seat_report
+        key = upload_seat_report(trade_date)
+        print(f"[6/6] 已上传 OSS: {key}")
+    except Exception as exc:  # noqa: BLE001 - 上传失败不影响本地产物
+        print(f"[警告] OSS 上传失败: {exc!r}；本地产物不受影响")
 
 
 if __name__ == "__main__":
