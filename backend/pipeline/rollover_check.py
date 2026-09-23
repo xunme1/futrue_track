@@ -106,13 +106,16 @@ def apply_to_config(path, changes):
 
 
 def backfill(new_symbols):
-    """为换月后的新合约全量补数并重算产物；返回失败的 symbol 列表。"""
+    """为换月后的新合约全量补数并重算产物；返回失败的 symbol 列表。
+
+    注意：screen 不能在单品种模式下跑——它会整份重写 screening/latest.json，
+    只留单品种子集。这里只补数据与信号，榜单由最后的 full_screen 统一重建。
+    """
     failed = []
     for symbol in new_symbols:
         for step in (
             ["-m", "backend.pipeline.download", "--symbols", symbol, "--timeframe", "all"],
             ["-m", "backend.pipeline.daily", "--symbols", symbol, "--timeframe", "all"],
-            ["-m", "backend.pipeline.screen", "--symbols", symbol, "--timeframe", "all"],
         ):
             print(f"[补数] {symbol}: {' '.join(step[2:])}")
             result = subprocess.run([sys.executable, *step], check=False)
@@ -121,6 +124,15 @@ def backfill(new_symbols):
                 failed.append(symbol)
                 break
     return failed
+
+
+def full_screen():
+    """换月后整体重建筛选榜单（1d+4h），保证 latest.json 覆盖全部池内品种。"""
+    print("[补数] 重建全量筛选榜单: screen --timeframe all")
+    return subprocess.run(
+        [sys.executable, "-m", "backend.pipeline.screen", "--timeframe", "all"],
+        check=False,
+    ).returncode
 
 
 def main(argv=None):
@@ -149,8 +161,12 @@ def main(argv=None):
     apply_to_config(CONTRACTS_FILE, changes)
     print(f"[配置] 已就地更新 {CONTRACTS_FILE}")
     failed = backfill([c["new"] for c in changes])
+    screen_rc = full_screen()
     if failed:
         print(f"[完成] 换月已应用，但 {len(failed)} 个新合约补数失败: {', '.join(failed)}")
+        return 1
+    if screen_rc != 0:
+        print("[警告] 全量筛选榜单重建失败，将由后续日更流程重跑")
         return 1
     print(f"[完成] {len(changes)} 个品种换月并补数完成")
     return 0

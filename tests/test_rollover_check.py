@@ -149,11 +149,27 @@ class MainTests(unittest.TestCase):
             with mock.patch.object(rollover_check, "load_contracts", return_value=contracts), \
                  mock.patch.object(rollover_check, "_login", return_value=rq), \
                  mock.patch.object(rollover_check, "CONTRACTS_FILE", path), \
+                 mock.patch.object(rollover_check, "full_screen", return_value=0) as screen, \
                  mock.patch.object(rollover_check, "backfill", return_value=[]) as backfill:
                 rc = rollover_check.main(["--date", "20260923"])
             self.assertEqual(rc, 0)
             backfill.assert_called_once_with(["rb2701.SHF"])
+            screen.assert_called_once_with()
             self.assertIn("- symbol: rb2701.SHF\n", path.read_text(encoding="utf-8"))
+
+    def test_main_reports_backfill_failure(self):
+        contracts = [_entry("rb2610.SHF")]
+        rq = _rq({"RB": "RB2701"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "contracts.yaml"
+            path.write_text(self.SAMPLE, encoding="utf-8")
+            with mock.patch.object(rollover_check, "load_contracts", return_value=contracts), \
+                 mock.patch.object(rollover_check, "_login", return_value=rq), \
+                 mock.patch.object(rollover_check, "CONTRACTS_FILE", path), \
+                 mock.patch.object(rollover_check, "full_screen", return_value=0), \
+                 mock.patch.object(rollover_check, "backfill", return_value=["rb2701.SHF"]):
+                rc = rollover_check.main(["--date", "20260923"])
+            self.assertEqual(rc, 1)
 
     def test_main_no_change_exits_zero(self):
         contracts = [_entry("rb2610.SHF")]
