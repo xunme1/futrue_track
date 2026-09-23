@@ -11,14 +11,21 @@
     GET /api/symbols             有数据的品种列表（含最新信号）
     GET /api/signals/{key}       某品种完整看板数据（K线+信号+通道+资金标记）
     GET /                        前端看板（frontend/ 静态目录）
+  访问控制：
+    环境变量 FUTURES_DASHBOARD_PASSWORD 设置后，全站（页面+API）需要密码登录；
+    未设置则不启用验证（本地开发默认开放）。
+    GET /login                   登录页；POST /api/login 校验口令并种下 7 天会话 cookie
 """
+import hashlib
+import hmac
 import json
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.config import DATA_DIR, PROJECT_ROOT, load_contracts
@@ -31,6 +38,75 @@ SCAN_DIR = REPORTS_DIR / "scan"
 NARRATIVE_DIR = REPORTS_DIR / "narrative"
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 app = FastAPI(title="期货指标监测 API", version="0.2.0")
+
+# ---------------------------------------------------------------- 登录验证
+# 密码只从环境变量读取，不写入任何配置文件；未设置时全站开放（本地开发）。
+DASHBOARD_PASSWORD = os.environ.get("FUTURES_DASHBOARD_PASSWORD", "")
+AUTH_COOKIE = "ft_auth"
+AUTH_COOKIE_MAX_AGE = 7 * 24 * 3600  # 7 天
+_AUTH_OPEN_PATHS = ("/login", "/api/login", "/api/health")
+_AUTH_TOKEN_MSG = b"futrue_track-dashboard-v1"
+
+
+def _auth_token() -> str:
+    """由口令派生的会话令牌；改口令即令全部已登录会话失效。"""
+    return hmac.new(DASHBOARD_PASSWORD.encode("utf-8"), _AUTH_TOKEN_MSG,
+                    hashlib.sha256).hexdigest()
+
+
+def _is_authed(request: Request) -> bool:
+    if not DASHBOARD_PASSWORD:
+        return True
+    token = request.cookies.get(AUTH_COOKIE, "")
+    return bool(token) and hmac.compare_digest(token, _auth_token())
+
+
+@app.middleware("http")
+async def dashboard_auth(request: Request, call_next):
+    if DASHBOARD_PASSWORD and request.url.path not in _AUTH_OPEN_PATHS \
+            and not _is_authed(request):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "未登录或会话已过期"}, status_code=401)
+        return RedirectResponse("/login", status_code=302)
+    return await call_next(request)
+
+
+_LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · 期货指标监测</title><style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b1526;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.card{background:#132a47;border:1px solid #294967;border-radius:10px;padding:36px 40px;width:300px;color:#eee9df}
+h1{font-size:18px;margin:0 0 6px;color:#d9b98a}p.sub{font-size:12px;color:#8fa3bd;margin:0 0 22px}
+input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:6px;border:1px solid #294967;background:#10233a;color:#eee9df;font-size:14px;outline:none}
+input:focus{border-color:#d9b98a}
+button{width:100%;margin-top:14px;padding:10px;border:0;border-radius:6px;background:#d9b98a;color:#102038;font-size:14px;font-weight:700;cursor:pointer}
+.err{color:#d45858;font-size:12px;min-height:16px;margin-top:10px}
+</style></head><body>
+<form class="card" id="f"><h1>期货指标监测</h1><p class="sub">请输入访问密码</p>
+<input type="password" id="pw" autocomplete="current-password" autofocus>
+<button type="submit">登 录</button><div class="err" id="err"></div></form>
+<script>
+document.getElementById('f').addEventListener('submit',async e=>{e.preventDefault();
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
+if(r.ok){location.href='/'}else{document.getElementById('err').textContent='密码错误，请重试'}});
+</script></body></html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return _LOGIN_PAGE
+
+
+@app.post("/api/login")
+def login(payload: dict):
+    password = str((payload or {}).get("password") or "")
+    if not DASHBOARD_PASSWORD or not hmac.compare_digest(password, DASHBOARD_PASSWORD):
+        raise HTTPException(status_code=401, detail="密码错误")
+    response = JSONResponse({"ok": True})
+    response.set_cookie(AUTH_COOKIE, _auth_token(), max_age=AUTH_COOKIE_MAX_AGE,
+                        httponly=True, samesite="lax")
+    return response
+
 
 
 def _load_payload(key: str, timeframe: str) -> dict:

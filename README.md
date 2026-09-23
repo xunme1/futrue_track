@@ -201,6 +201,9 @@ Copy-Item config\config.example.yaml config\config.yaml
 $env:FUTURES_IFIND_USERNAME = "你的账号"
 $env:FUTURES_IFIND_PASSWORD = "你的密码"
 $env:FUTURES_RQDATA_LICENSE_KEY = "你的许可证"
+
+# 可选：看板访问密码。设置后全站（页面+API）需登录，未设置则全站开放
+$env:FUTURES_DASHBOARD_PASSWORD = "你的访问密码"
 ```
 
 `config/config.yaml` 已加入 `.gitignore`，只应作为本机配置使用。已经外泄或曾提交过的凭据仍需在数据供应商处主动轮换。
