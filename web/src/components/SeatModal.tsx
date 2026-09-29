@@ -31,6 +31,7 @@ export default function SeatModal({ open, onClose }: Props) {
   const [active, setActive] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<string | null>(null)
   const [analysisErr, setAnalysisErr] = useState<string | null>(null)
+  const [archiveOpen, setArchiveOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -78,8 +79,8 @@ export default function SeatModal({ open, onClose }: Props) {
     URL.revokeObjectURL(url)
   }
 
-  return <div className="modal-mask" onClick={onClose}>
-    <div className="modal-panel report-panel" onClick={(event) => event.stopPropagation()}>
+  return <div className="modal-mask seat-modal-mask" onClick={onClose}>
+    <div className="modal-panel report-panel seat-panel" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose}>✕ 关闭</button>
       {activeMeta?.has_html ? <a className="modal-download"
         href={`/api/seat/${activeMeta.date}/html`}
@@ -90,10 +91,24 @@ export default function SeatModal({ open, onClose }: Props) {
       {!activeMeta?.has_html && activeMeta?.has_analysis && analysis && <button
         className="modal-download modal-download-2"
         onClick={downloadAnalysis}>⬇️ 解读</button>}
-      <h2 className="report-title">🪑 席位追踪</h2>
+      <div className="seat-heading">
+        <h2 className="report-title">🪑 席位追踪</h2>
+        <select aria-label="席位日报日期" value={active ?? ''}
+          onChange={(event) => setActive(event.target.value)}>
+          {!active && <option value="">选择日期</option>}
+          {items.map((item) => <option key={item.date} value={item.date}
+            disabled={!item.has_html && !item.has_image}>
+            {fmtDate(item.date)}{item.date === items[0]?.date ? ' · 最新' : ''}
+          </option>)}
+        </select>
+        <button type="button" aria-expanded={archiveOpen} aria-controls="seat-archive-list"
+          onClick={() => setArchiveOpen((value) => !value)}>
+          {archiveOpen ? '收起归档' : '历史归档'}
+        </button>
+      </div>
+      {error && <div className="status-msg">列表加载失败:{error}</div>}
       <div className="report-body">
-        <aside className="report-list">
-          {error && <div className="status-msg">列表加载失败:{error}</div>}
+        <aside className="report-list" id="seat-archive-list" hidden={!archiveOpen}>
           {!error && items.length === 0 && <div className="status-msg">暂无归档席位数据</div>}
           {items.map((r) => (
             <button key={r.date}

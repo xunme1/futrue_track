@@ -200,6 +200,16 @@ button { font: inherit; }
 .report-viewer { flex: 1; min-width: 0; display: flex; }
 .report-viewer iframe { flex: 1; border: 1px solid #35436b; border-radius: 8px; background: #f6f7f9; }
 .seat-viewer { overflow: hidden; }
+.seat-modal-mask { padding: 2vh 12px; }
+.seat-panel { max-width: 1920px; height: 96vh; padding: 12px 14px 14px; }
+.seat-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 290px 10px 0; min-height: 30px; }
+.seat-heading .report-title { margin: 0; white-space: nowrap; }
+.seat-heading select, .seat-heading button { padding: 5px 9px; border: 1px solid #35436b; border-radius: 6px; color: #cfd8ec; background: #111a2e; font: inherit; font-size: 12px; }
+.seat-heading button { cursor: pointer; }
+.seat-panel .report-list { width: 200px; }
+.seat-panel .report-list[hidden] { display: none; }
+.seat-panel .report-body { gap: 10px; }
+.seat-panel .report-viewer iframe { min-width: 0; width: 100%; }
 .seat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px; }
 .seat-scroll img { width: 100%; max-width: 760px; align-self: center; border: 1px solid #35436b; border-radius: 8px; }
 .seat-analysis { align-self: center; width: 100%; max-width: 760px; background: #111a2e; border: 1px solid #35436b; border-radius: 8px; padding: 14px 18px; }
@@ -211,4 +221,9 @@ button { font: inherit; }
   .report-body { flex-direction: column; }
   .report-list { width: 100%; max-height: 200px; }
   .report-viewer { min-height: 60vh; }
+  .seat-modal-mask { padding: 8px; }
+  .seat-panel { height: calc(100dvh - 16px); padding: 10px; }
+  .seat-heading { margin: 36px 0 8px; gap: 7px; }
+  .seat-panel .report-list { width: 100%; max-height: 120px; }
+  .seat-panel .report-viewer { min-height: 0; }
 }
