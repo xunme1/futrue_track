@@ -100,6 +100,10 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.rollover_check             # 检查并应用换月+补数
 ```
 
+需要把某品种**钉死在指定合约**（不跟随主力换月）时，在 contracts.yaml 对应条目加
+`pinned: <合约>` 白名单字段（如甲醇钉 11 月合约：`pinned: MA611.CZC`），每日检查会跳过
+该品种；若条目 symbol 与 pinned 值不一致（如池生成器重跑覆盖），只告警不自动改回。
+
 整池更换（增减品种）仍走生成器：
 
 ```bash

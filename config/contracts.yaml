@@ -287,11 +287,12 @@ contracts:
   name: 瓶片
   category: 化工
   exchange: CZCE
-- symbol: MA701.CZC
+- symbol: MA611.CZC
   source: ricequant
   name: 甲醇
   category: 化工
   exchange: CZCE
+  pinned: MA611.CZC
 - symbol: PF611.CZC
   source: ricequant
   name: 短纤

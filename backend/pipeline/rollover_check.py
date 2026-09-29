@@ -9,7 +9,9 @@ scan_report 的 Δ4h 环比即可用。
     python -m backend.pipeline.rollover_check              # 检查并应用换月
     python -m backend.pipeline.rollover_check --dry-run    # 只报告，不改文件不下载
 
-extra: true 的条目（股指/ETF/定点合约）不参与换月。单品种查询失败只告警，
+extra: true 的条目（股指/ETF/定点合约）不参与换月；条目标记 ``pinned: <合约>``
+（白名单）则钉死在指定合约，每日跳过换月检查——若条目 symbol 与 pinned 值
+不一致（如池生成器重跑覆盖），只告警不自动改回。单品种查询失败只告警，
 保留原合约，不中断整体流程。
 """
 from __future__ import annotations
@@ -62,8 +64,18 @@ def detect_rollovers(rq, contracts, date):
     """
     changes, warnings = [], []
     pool = [e for e in contracts if not e.get("extra")]
+    pinned_n = 0
     for i, entry in enumerate(pool, 1):
         symbol = entry["symbol"]
+        pinned = entry.get("pinned")
+        if pinned:
+            pinned_n += 1
+            if str(pinned) != symbol:
+                warnings.append(
+                    (symbol, f"白名单钉住合约为 {pinned}，配置已偏离，保持现状不自动改回"))
+            else:
+                print(f"[{i:3d}/{len(pool)}] {symbol.split('.')[0].upper():5s} 白名单钉住 {symbol}，跳过换月检查")
+            continue
         base = symbol.split(".")[0]
         parts = _split_base(base)
         if parts is None:

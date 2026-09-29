@@ -84,6 +84,21 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         self.assertIn("无返回", warnings[0][1])
         self.assertIn("异常", warnings[1][1])
+    def test_pinned_entry_skipped_and_drift_only_warns(self):
+        contracts = [
+            _entry("MA611.CZC", pinned="MA611.CZC"),   # 钉住且一致：跳过检查
+            _entry("SR701.CZC", pinned="SR705.CZC"),   # 钉住但配置偏离：仅告警
+            _entry("rb2610.SHF"),                       # 非白名单：正常检查
+        ]
+        rq = _rq({"RB": "RB2701"})
+        changes, warnings = rollover_check.detect_rollovers(rq, contracts, "20260923")
+        # 甲醇/白糖完全未调用 get_dominant（FakeFutures 对 MA/SR 会返回 None 记告警，
+        # 若被调用则 warnings 会出现"无返回"；这里只允许出现偏离告警）
+        self.assertEqual([(c["old"], c["new"]) for c in changes],
+                         [("rb2610.SHF", "rb2701.SHF")])
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0][0], "SR701.CZC")
+        self.assertIn("钉住合约为 SR705.CZC", warnings[0][1])
 
 
 class ApplyConfigTests(unittest.TestCase):
