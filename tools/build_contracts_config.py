@@ -31,9 +31,9 @@ EXCHANGE_MAP = {
 }
 
 # 首次生成时的池外补充品种（extra: true，重新生成时保留）
+# 注意：曾有的 IM2609.CFE 定点合约已于 2026-09-18 到期移除，不要再加回默认。
 DEFAULT_EXTRAS = [
     {"symbol": "IM8888.CFE", "source": "ricequant", "name": "中证1000主连",  "category": "股指", "exchange": "CFFEX", "extra": True},
-    {"symbol": "IM2609.CFE", "source": "ricequant", "name": "中证1000·09合约", "category": "股指", "exchange": "CFFEX", "extra": True},
 ]
 
 

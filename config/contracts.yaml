@@ -318,12 +318,6 @@ contracts:
   name: 锰硅
   category: 铁合金
   exchange: CZCE
-- symbol: IM2609.CFE
-  source: ricequant
-  name: 中证1000·09合约
-  category: 股指
-  exchange: CFFEX
-  extra: true
 - symbol: 000852.XSHG
   source: ricequant
   name: 中证1000指数
