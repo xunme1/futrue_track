@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime
 import html
 import json
+import math
 from pathlib import Path
 
 from backend.core.config import load_contracts
@@ -54,6 +55,17 @@ def load_price(entry, store=None):
         return None
 
 
+def _sanitize(obj):
+    """递归把 NaN/Inf 换成 None，保证 allow_nan=False 的 JSON 序列化与 digest 稳定。"""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 def build_facts(directory=None, store=None):
     """汇总全部有 history 的品种 → facts dict（含图表序列与规则信号）。"""
     root = Path(directory) if directory else HISTORY_DIR
@@ -78,12 +90,12 @@ def build_facts(directory=None, store=None):
     n_long = sum(1 for m in symbols for s in m["signals"] if s["tone"] == "long")
     n_short = sum(1 for m in symbols for s in m["signals"] if s["tone"] == "short")
     n_warn = sum(1 for m in symbols for s in m["signals"] if s["tone"] == "warn")
-    return {
+    return _sanitize({
         "data_date": data_date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "symbols": symbols,
         "coverage": {"total": len(symbols), "long": n_long, "short": n_short, "warn": n_warn},
-    }
+    })
 
 
 CSS = r"""

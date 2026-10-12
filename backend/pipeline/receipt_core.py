@@ -235,7 +235,7 @@ def build_series(hist: pd.DataFrame, price: pd.DataFrame | None = None,
 
     ef = None
     if hist["ef_lots"].notna().any():
-        ef = [[d, round(v, 1), (round(e, 1) if e is not None else 0.0)]
+        ef = [[d, round(v, 1), round(_num(e) or 0.0, 1)]
               for d, v, e in zip(dates, lots, hist["ef_lots"].tolist())][-daily_n:]
 
     return {"daily": daily, "changes": changes, "seasonal": seasonal, "ef": ef}
