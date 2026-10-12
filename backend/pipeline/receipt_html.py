@@ -66,8 +66,8 @@ def _sanitize(obj):
     return obj
 
 
-def build_facts(directory=None, store=None):
-    """汇总全部有 history 的品种 → facts dict（含图表序列与规则信号）。"""
+def build_facts(directory=None, store=None, as_of=None):
+    """汇总截至 as_of 的历史 → facts；补跑不得读取目标日之后的仓单。"""
     root = Path(directory) if directory else HISTORY_DIR
     store = store or Store()
     contracts = contract_map()
@@ -75,6 +75,8 @@ def build_facts(directory=None, store=None):
     for path in sorted(root.glob("*.csv")):
         symbol = path.stem.upper()
         hist = load_history(path)
+        if as_of is not None:
+            hist = hist[hist["date"] <= as_of]
         entry = contracts.get(symbol)
         price = load_price(entry, store)
         metrics = compute_symbol_metrics(hist, price)
@@ -91,6 +93,7 @@ def build_facts(directory=None, store=None):
     n_short = sum(1 for m in symbols for s in m["signals"] if s["tone"] == "short")
     n_warn = sum(1 for m in symbols for s in m["signals"] if s["tone"] == "warn")
     return _sanitize({
+        "as_of": as_of,
         "data_date": data_date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "symbols": symbols,
@@ -138,6 +141,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 .chart h3{margin:0 0 4px;font-size:11px;color:var(--muted);font-weight:400}
 .chart svg{display:block;width:100%;height:auto}
 .stale{color:var(--gold);font-size:10px}
+.data-note{padding:0 14px 10px;color:var(--gold);font-size:11px}
 .footer{margin-top:16px;padding-top:12px;border-top:1px solid var(--edge);color:var(--muted);font-size:11px;line-height:1.7}
 .empty{padding:40px;text-align:center;color:var(--muted)}
 @media(max-width:760px){.report{padding:12px}.masthead{grid-template-columns:1fr}.date{text-align:left}.coverage{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.picker-panel{position:fixed;left:12px;right:12px;top:92px;width:auto}}
@@ -170,8 +174,10 @@ function lineChart(spec){
  if(spec.y2){const[l2,h2]=spec.y2;const Y2=v=>PT+(1-(v-l2)/(h2-l2))*(H-PT-PB);
   inner+=ticks(l2,h2,4).map(v=>`<text x="${W-PR+5}" y="${Y2(v)+3}" fill="#8ab4d8" font-size="9">${fmtTick(v)}</text>`).join('')}
  spec.series.forEach(s=>{const yF=s.right?(v=>PT+(1-(v-spec.y2[0])/(spec.y2[1]-spec.y2[0]))*(H-PT-PB)):Y;
-  const d=s.pts.filter(p=>p[1]!==null&&p[1]!==undefined).map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)},${yF(p[1]).toFixed(1)}`).join('');
-  if(d)inner+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width||1.4}" ${s.dash?'stroke-dasharray="4 3"':''} stroke-linejoin="round"/>`});
+  let connected=false;
+  const d=s.pts.map(p=>{if(!Number.isFinite(p[1])){connected=false;return ''}const cmd=connected?'L':'M';connected=true;return `${cmd}${X(p[0]).toFixed(1)},${yF(p[1]).toFixed(1)}`}).join('');
+  if(d)inner+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width||1.4}" ${s.dash?'stroke-dasharray="4 3"':''} stroke-linejoin="round"/>`;
+  s.pts.forEach((p,i)=>{if(Number.isFinite(p[1])&&!Number.isFinite(s.pts[i-1]?.[1])&&!Number.isFinite(s.pts[i+1]?.[1]))inner+=`<circle cx="${X(p[0]).toFixed(1)}" cy="${yF(p[1]).toFixed(1)}" r="2" fill="${s.color}"/>`})});
  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(spec.aria||'')}">${inner}</svg>`}
 function barChart(rows,aria){
  const vals=rows.map(r=>r[1]),[lo,hi]=ext(vals.concat([0])),xLo=0,xHi=rows.length-1||1;
@@ -186,21 +192,22 @@ function barChart(rows,aria){
 
 /* ---------- 卡片 ---------- */
 function dateTicks(daily){const n=daily.length-1;return [0,.25,.5,.75,1].map(f=>{const i=Math.round(f*n);return daily[i]?{v:i,label:fmtD(daily[i][0]).slice(5)}:null}).filter(Boolean)}
-function chartDual(s){const pts=s.series.daily.map((r,i)=>[i,r[1]]);const price=s.series.daily.map((r,i)=>[i,r[2]]).filter(p=>p[2]!==null);
+function chartDual(s){const pts=s.series.daily.map((r,i)=>[i,r[1]]);const price=s.series.daily.map((r,i)=>[i,r[2]]);
  const spec={series:[{pts,color:'#d9b98a',width:1.6}],xTicks:dateTicks(s.series.daily),aria:'注册仓单与主力价格双轴走势'};
- if(price.length>5){spec.series.push({pts:price,color:'#8ab4d8',width:1.2,right:true});spec.y2=ext(price.map(p=>p[1]))}
+ if(price.filter(p=>Number.isFinite(p[1])).length>5){spec.series.push({pts:price,color:'#8ab4d8',width:1.2,right:true});spec.y2=ext(price.map(p=>p[1]))}
  return lineChart(spec)}
 function chartSeasonal(s){const palette=['#566d88','#7f95ad','#8ab4d8','#26a67b','#c98a5e'];const years=Object.keys(s.series.seasonal).sort();
  const cur=years[years.length-1];const series=years.map((y,i)=>({pts:s.series.seasonal[y].map(p=>[p[0],p[1]]),color:y===cur?'#d9b98a':palette[i%palette.length],width:y===cur?1.9:1.1,dash:y!==cur&&i%2===1}));
  const xTicks=[1,32,60,91,121,152,182,213,244,274,305,335].map((v,i)=>({v,label:(i+1)+'月'}));
  return lineChart({series,xTicks,y:ext(series.flatMap(sr=>sr.pts.map(p=>p[1]))),aria:'分年仓单季节性叠加'})}
 function chartChanges(s){return barChart(s.series.changes,'近60交易日仓单增减')}
-function chartEf(s){const pts=s.series.ef.map((r,i)=>[i,r[1]]),ef=s.series.ef.map((r,i)=>[i,r[2]]),tot=s.series.ef.map((r,i)=>[i,r[1]+r[2]]);
+function chartEf(s){const pts=s.series.ef.map((r,i)=>[i,r[1]]),ef=s.series.ef.map((r,i)=>[i,r[2]]),tot=s.series.ef.map((r,i)=>[i,Number.isFinite(r[2])?r[1]+r[2]:null]);
  return lineChart({series:[{pts:tot,color:'#26a67b',width:1.6},{pts,color:'#d9b98a',width:1.2},{pts:ef,color:'#8ab4d8',width:1.1,dash:true}],xTicks:dateTicks(s.series.ef),aria:'仓单与有效预报合计（绿=合计，金=仓单，蓝虚线=有效预报）'})}
 function metric(label,value,cls){return `<div class="metric">${label}<b class="${cls||''}">${value}</b></div>`}
 function cardHtml(s){
  const badges=s.signals.map(g=>`<span class="badge ${g.tone}" title="${esc(g.detail)}">${esc(g.title)}</span>`).join('');
  const stale=s.date!==facts.data_date?`<span class="stale" title="该品种仓单日报滞后于全市场最新日">数据至 ${fmtD(s.date)}</span>`:'';
+ const priceNote=s.price_missing_reason?`<div class="data-note">行情：${esc(s.price_missing_reason)}</div>`:'';
  const cls5=s.change_5d>0?'up':s.change_5d<0?'down':'';
  const metrics=[
   metric(`注册仓单（${esc(s.unit)}）`,fmtI(s.on_warrant)),
@@ -215,8 +222,8 @@ function cardHtml(s){
  const charts=[`<div class="chart"><h3>仓单 × 主力价（近1年，右轴价 ${esc(s.contract||'')}）</h3>${chartDual(s)}</div>`,
   `<div class="chart"><h3>分年季节性（当年加粗）</h3>${chartSeasonal(s)}</div>`,
   `<div class="chart"><h3>日增减（近60交易日，折手）</h3>${chartChanges(s)}</div>`];
- if(s.series.ef)charts.push(`<div class="chart"><h3>仓单 + 有效预报（绿合计/金仓单/蓝预报）</h3>${chartEf(s)}</div>`);
- return `<section class="card" id="card-${esc(s.symbol)}"><div class="card-head"><h2>${esc(s.name)}</h2><span class="code">${esc(s.symbol)}</span><span class="ex">${esc(s.exchange)}</span>${stale}<div class="badges">${badges}</div></div><div class="metrics">${metrics}</div><div class="charts">${charts.join('')}</div></section>`}
+ if(s.series.ef)charts.push(`<div class="chart"><h3>仓单 + 有效预报（绿合计/金仓单/蓝预报；缺失处断线，合计不估算）</h3>${chartEf(s)}</div>`);
+ return `<section class="card" id="card-${esc(s.symbol)}"><div class="card-head"><h2>${esc(s.name)}</h2><span class="code">${esc(s.symbol)}</span><span class="ex">${esc(s.exchange)}</span>${stale}<div class="badges">${badges}</div></div><div class="metrics">${metrics}</div>${priceNote}<div class="charts">${charts.join('')}</div></section>`}
 
 /* ---------- 汇总条 + 交互 ---------- */
 function sortedSymbols(){let list=state.selected.length?state.selected.map(x=>bySymbol[x]).filter(Boolean):facts.symbols.slice();
@@ -286,8 +293,9 @@ def publish_report(facts, directory=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
-    facts = build_facts()
+    parser.add_argument("--date", help="只使用截至此日的仓单历史（YYYYMMDD）")
+    args = parser.parse_args(argv)
+    facts = build_facts(as_of=args.date)
     if not facts["symbols"]:
         raise SystemExit("缺少 history 数据，请先运行 python -m backend.pipeline.receipt_fetch --backfill")
     html_path, json_path = publish_report(facts)

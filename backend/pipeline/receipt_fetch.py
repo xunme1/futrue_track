@@ -6,13 +6,15 @@
     python -m backend.pipeline.receipt_fetch --date 20261009 --force
 
 history 文件按 date 去重追加（新覆盖旧），只增不重排；当日快照 receipt_data_<date>.csv
-按「全部品种实际最新日期」归档（仓单日报约每交易日傍晚更新，接口未更新时自动顺延）。
+按「不晚于目标日的实际最新日期」归档；新缺失品种单独回填，已有品种只做增量。
+无数据响应记录于 fetch_status.json，后续小窗口重试；--backfill/--force 可主动重查。
 license：环境变量 FUTURES_RQDATA_LICENSE_KEY 或 config/config.yaml 的 ricequant.license_key。
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import sys
 
@@ -55,7 +57,6 @@ def multiplier_map(rq, date, force=False):
     """品种 → 合约乘数（吨/手）；rq 仓单接口对 SHFE/INE 不返回乘数，需从合约表补齐。"""
     cache = RECEIPT_DIR / f"multiplier_{date}.json"
     if cache.exists() and not force:
-        import json
         return json.loads(cache.read_text(encoding="utf-8"))
     df = rq.all_instruments(type="Future", market="cn", date=date)
     df = df[~df["underlying_symbol"].astype(str).str.contains("_", na=False)]
@@ -113,21 +114,24 @@ def append_history(frame, multipliers, directory=None) -> dict:
     return added
 
 
-def snapshot(root=None):
-    """从 history 汇总「全部品种实际最新交易日」的快照 → receipt_data_<date>.csv。"""
+def snapshot(root=None, as_of=None):
+    """从 history 汇总不晚于 as_of 的最新快照 → receipt_data_<date>.csv。"""
     root = Path(root) if root else HISTORY_DIR
     rows = []
     for path in sorted(root.glob("*.csv")):
         df = pd.read_csv(path, dtype={"date": str})
+        if as_of is not None:
+            df = df[df["date"] <= as_of]
         if df.empty:
             continue
-        rows.append(df.iloc[-1])
+        rows.append(df.sort_values("date").iloc[-1])
     if not rows:
         return None, None
     latest = pd.DataFrame(rows)
     max_date = str(latest["date"].max())
     day = latest[latest["date"].astype(str) == max_date]
     out = RECEIPT_DIR / f"receipt_data_{max_date}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
     day.to_csv(out, index=False)
     return max_date, out
 
@@ -140,25 +144,65 @@ def run(date=None, backfill=False, start=None, force=False, rq=None):
     symbols = commodity_symbols(target)
     print(f"品种池 {len(symbols)} 个：{' '.join(symbols)}")
 
-    missing = [s for s in symbols if not (HISTORY_DIR / f"{s}.csv").exists()]
-    if backfill or missing:
-        start_date = start or BACKFILL_START
-        if missing and not backfill:
-            print(f"[提示] {len(missing)} 个品种无历史，按回填起点 {start_date} 拉取：{' '.join(missing)}")
-    else:
-        start_date = start or (
-            datetime.strptime(target, "%Y%m%d") - timedelta(days=DAILY_LOOKBACK_DAYS)
-        ).strftime("%Y%m%d")
+    status_path = RECEIPT_DIR / "fetch_status.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        if not isinstance(status, dict):
+            status = {}
+    except (OSError, ValueError):
+        status = {}
+    recent_start = (
+        datetime.strptime(target, "%Y%m%d") - timedelta(days=DAILY_LOOKBACK_DAYS)
+    ).strftime("%Y%m%d")
+    requests = {}
+    for symbol in symbols:
+        previous = status.get(symbol)
+        previous = previous if isinstance(previous, dict) else {}
+        if start or backfill:
+            start_date = start or BACKFILL_START
+        elif (HISTORY_DIR / f"{symbol}.csv").exists():
+            start_date = recent_start
+        elif (not force and previous.get("status") == "no_data"
+              and str(previous.get("checked_from") or "99999999") <= BACKFILL_START
+              and previous.get("checked_through")):
+            # 无数据不等于永久不支持：仍回扫近期；停跑后的未检查区间也不能漏掉。
+            start_date = max(BACKFILL_START, min(recent_start, previous["checked_through"]))
+        else:
+            start_date = BACKFILL_START
+        requests.setdefault(start_date, []).append(symbol)
 
-    multipliers = multiplier_map(rq, target)
-    frame = fetch_frame(rq, symbols, start_date, target)
-    if frame.empty:
+    multipliers = multiplier_map(rq, target, force=force)
+    frames = []
+    for start_date, batch in sorted(requests.items()):
+        print(f"[区间] {start_date}~{target}：{' '.join(batch)}")
+        part = fetch_frame(rq, batch, start_date, target)
+        found = set(part["symbol"]) if not part.empty else set()
+        if not part.empty:
+            frames.append(part)
+        for symbol in batch:
+            previous = status.get(symbol)
+            previous = previous if isinstance(previous, dict) else {}
+            checked_from, checked_through = start_date, target
+            if (symbol not in found and previous.get("status") == "no_data"
+                    and str(previous.get("checked_from") or "99999999") <= target
+                    and str(previous.get("checked_through") or "") >= start_date):
+                checked_from = min(start_date, previous["checked_from"])
+                checked_through = max(target, previous["checked_through"])
+            status[symbol] = {
+                "status": "available" if symbol in found else "no_data",
+                "checked_from": checked_from, "checked_through": checked_through,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+    # 只有成功响应（包括空响应）才记录；请求异常不缓存成「不支持」。
+    atomic_json(status_path, status)
+    if not frames:
         print("[错误] 未取到任何仓单数据")
         return None, None
+    frame = pd.concat(frames, ignore_index=True)
     added = append_history(frame, multipliers)
     total_new = sum(added.values())
     print(f"[归档] history 更新 {len(added)} 个品种，净新增 {total_new} 行")
-    effective, out = snapshot()
+    effective, out = snapshot(as_of=target)
     print(f"[快照] {out}（{effective}）")
     return effective, out
 
@@ -168,7 +212,7 @@ def main(argv=None):
     ap.add_argument("--date", help="目标交易日 YYYYMMDD（默认最近工作日）")
     ap.add_argument("--backfill", action="store_true", help=f"全量回填（起点 {BACKFILL_START} 或 --start）")
     ap.add_argument("--start", help="自定义抓取起点 YYYYMMDD")
-    ap.add_argument("--force", action="store_true", help="忽略乘数缓存重新请求")
+    ap.add_argument("--force", action="store_true", help="忽略乘数缓存，并重新回填尚无历史的品种")
     args = ap.parse_args(argv)
     effective, _ = run(date=args.date, backfill=args.backfill,
                        start=args.start, force=args.force)

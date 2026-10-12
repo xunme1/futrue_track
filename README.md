@@ -153,6 +153,11 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m backend.pipeline.receipt_daily                # 一键：增量抓数→交互 HTML
 .venv/Scripts/python -m backend.pipeline.receipt_fetch --backfill     # 首次部署全量回填（2021 年起）
 .venv/Scripts/python -m backend.pipeline.receipt_daily --date 20261009  # 指定交易日补跑
+.venv/Scripts/python -m backend.pipeline.receipt_html --date 20261009   # 仅用本地历史重画，不抓数
+#    补跑只使用不晚于目标日的数据，不覆盖更晚日期的日报；行情严格匹配各品种仓单日。
+#    同日价格/持仓缺失时不计算相关信号；有效预报缺失保留为空，曲线断开、合计不估算。
+#    新品种单独回填；空响应记录于 data/receipt/fetch_status.json，后续仍做小窗口重试。
+#    receipt_fetch --force 可重查无历史品种，--backfill 可主动重拉全部历史。
 #    四图：仓单×主力价双轴（近1年）、分年季节性叠加（近5年）、日增减柱（近60日）、
 #    仓单+有效预报（仅郑商所）；规则信号 R1 供应压力/R2 供应偏紧/R3 高位套保/R4 注销潮/R5 虚实比警示。
 #    折手为估算口径：郑商所 张×warrant_units，上期所/能源中心 吨÷合约乘数，大商所原值即手。

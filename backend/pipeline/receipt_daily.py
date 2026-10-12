@@ -33,7 +33,7 @@ def main(argv=None):
     print("[2/2] 生成 HTML 报告…")
     try:
         from backend.pipeline.receipt_html import build_facts, publish_report
-        facts = build_facts()
+        facts = build_facts(as_of=effective)
         if not facts["symbols"]:
             sys.exit("[错误] history 为空，无法出报告")
         html_path, json_path = publish_report(facts)

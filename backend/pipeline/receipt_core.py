@@ -186,18 +186,33 @@ def compute_symbol_metrics(hist: pd.DataFrame, price: pd.DataFrame | None = None
     if m["ef_lots"] is not None:
         m["total_lots"] = lots_now + m["ef_lots"]
 
-    # 主力合约价格/持仓联动（虚实比、价格分位）
+    # 只使用仓单同日行情；禁止用未来或更早的收盘价/持仓替代。
+    m.update({"close": None, "price_pct_1y": None, "oi": None,
+              "virtual_ratio": None, "price_date": None,
+              "price_missing_reason": "无本地行情，价格分位及虚实比不可用"})
     if price is not None and not price.empty:
         price = price.sort_index()
-        closes = [_num(v) for v in price["close"].tolist()]
-        closes = [c for c in closes if c is not None]
-        if closes:
-            m["close"] = closes[-1]
-            m["price_pct_1y"] = percentile(closes[-250:], closes[-1])
-        ccl = _num(price["ccl"].iloc[-1]) if "ccl" in price.columns else None
-        if ccl and ccl > 0:
-            m["oi"] = ccl
-            m["virtual_ratio"] = lots_now / ccl
+        price_dates = pd.to_datetime(price.index).strftime("%Y%m%d")
+        same_day = price.loc[price_dates == m["date"]]
+        m["price_missing_reason"] = f"缺少仓单日 {m['date']} 的行情，价格分位及虚实比不可用"
+        if not same_day.empty:
+            row = same_day.iloc[-1]
+            m["price_date"] = m["date"]
+            m["close"] = _num(row.get("close"))
+            missing = []
+            if m["close"] is not None:
+                closes = price.loc[price_dates <= m["date"], "close"].tolist()
+                closes = [v for v in map(_num, closes) if v is not None]
+                m["price_pct_1y"] = percentile(closes[-250:], m["close"])
+            else:
+                missing.append("同日收盘价缺失，价格分位不可用")
+            ccl = _num(row.get("ccl"))
+            if ccl is not None and ccl > 0:
+                m["oi"] = ccl
+                m["virtual_ratio"] = lots_now / ccl
+            else:
+                missing.append("同日持仓缺失或为零，虚实比不可用")
+            m["price_missing_reason"] = "；".join(missing) or None
     m["signals"] = evaluate_signals(m)
     return m
 
@@ -211,7 +226,7 @@ def build_series(hist: pd.DataFrame, price: pd.DataFrame | None = None,
     lots = hist["lots"].tolist()
 
     closes = [None] * len(dates)
-    if price is not None and not price.empty:
+    if price is not None and not price.empty and "close" in price.columns:
         cmap = {t.strftime("%Y%m%d"): _num(c)
                 for t, c in zip(price.index, price["close"].tolist())}
         closes = [cmap.get(d) for d in dates]
@@ -235,7 +250,7 @@ def build_series(hist: pd.DataFrame, price: pd.DataFrame | None = None,
 
     ef = None
     if hist["ef_lots"].notna().any():
-        ef = [[d, round(v, 1), round(_num(e) or 0.0, 1)]
-              for d, v, e in zip(dates, lots, hist["ef_lots"].tolist())][-daily_n:]
+        ef = [[d, round(v, 1), round(e, 1) if e is not None else None]
+              for d, v, e in zip(dates, lots, map(_num, hist["ef_lots"]))][-daily_n:]
 
     return {"daily": daily, "changes": changes, "seasonal": seasonal, "ef": ef}

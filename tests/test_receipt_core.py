@@ -118,7 +118,7 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(m["pct_all"], 1.0)
 
     def test_virtual_ratio_with_price(self):
-        hist = make_hist([100] * 25)  # 折手 800
+        hist = make_hist([100] * 25, start="20260901")  # 折手 800，与行情同日
         price = pd.DataFrame(
             {"close": [3000.0] * 25, "ccl": [20000.0] * 25},
             index=pd.date_range("2026-09-01", periods=25, freq="D"))
@@ -126,6 +126,59 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(m["oi"], 20000.0)
         self.assertAlmostEqual(m["virtual_ratio"], 800 / 20000)
         self.assertIn("R5", [s["code"] for s in m["signals"]])
+
+    def test_future_prices_do_not_change_historical_metrics(self):
+        hist = make_hist([100] * 29 + [120], exchange="DCE", start="20260901")
+        price = pd.DataFrame(
+            {"close": list(range(300, 329)) + [100], "ccl": [1000] * 30},
+            index=pd.date_range("20260901", periods=30))
+        expected = compute_symbol_metrics(hist, price)
+        price.loc[pd.Timestamp("20261009")] = [500, 100000]
+        actual = compute_symbol_metrics(hist, price)
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["price_date"], "20260930")
+        self.assertEqual(actual["close"], 100)
+        self.assertAlmostEqual(actual["virtual_ratio"], 0.12)
+        self.assertEqual([s["code"] for s in actual["signals"]], ["R1"])
+
+    def test_missing_same_day_price_does_not_use_previous_or_future(self):
+        hist = make_hist([100] * 29 + [120], start="20260901")
+        for start in ("20260901", "20261001"):
+            with self.subTest(price_start=start):
+                price = pd.DataFrame(
+                    {"close": [500] * 29, "ccl": [100000] * 29},
+                    index=pd.date_range(start, periods=29))
+                m = compute_symbol_metrics(hist, price)
+                for key in ("close", "price_pct_1y", "oi", "virtual_ratio", "price_date"):
+                    self.assertIsNone(m[key])
+                self.assertIn("缺少仓单日 20260930 的行情", m["price_missing_reason"])
+                self.assertEqual([s["code"] for s in m["signals"]], ["R1"])
+
+    def test_missing_same_day_close_is_not_forward_filled(self):
+        hist = make_hist([100] * 29 + [120], start="20260901")
+        price = pd.DataFrame(
+            {"close": [500] * 29 + [float("nan")], "ccl": [20000] * 30},
+            index=pd.date_range("20260901", periods=30))
+        m = compute_symbol_metrics(hist, price)
+        self.assertIsNone(m["close"])
+        self.assertIsNone(m["price_pct_1y"])
+        self.assertIsNotNone(m["virtual_ratio"])
+        self.assertIn("同日收盘价缺失", m["price_missing_reason"])
+        self.assertNotIn("R3", [s["code"] for s in m["signals"]])
+
+    def test_missing_same_day_oi_does_not_trigger_ratio_signal(self):
+        hist = make_hist([100] * 30, start="20260901")
+        for oi in (None, float("nan"), 0):
+            with self.subTest(oi=oi):
+                price = pd.DataFrame(
+                    {"close": [500] * 30, "ccl": [100000] * 29 + [oi]},
+                    index=pd.date_range("20260901", periods=30))
+                m = compute_symbol_metrics(hist, price)
+                self.assertEqual(m["close"], 500)
+                self.assertIsNone(m["oi"])
+                self.assertIsNone(m["virtual_ratio"])
+                self.assertIn("同日持仓缺失或为零", m["price_missing_reason"])
+                self.assertNotIn("R5", [s["code"] for s in m["signals"]])
 
     def test_empty_history(self):
         self.assertFalse(compute_symbol_metrics(pd.DataFrame()).get("available"))
@@ -147,6 +200,15 @@ class TestSeries(unittest.TestCase):
         # 仓单折手 800 + 预报折手 80
         self.assertEqual(series["ef"][-1][1], 800)
         self.assertEqual(series["ef"][-1][2], 80)
+
+    def test_ef_missing_stays_unknown_but_reported_zero_is_zero(self):
+        hist = make_hist([100] * 4, ef=[50, None, float("nan"), 0])
+        series = build_series(hist)
+        self.assertEqual([r[2] for r in series["ef"]], [400, None, None, 0])
+        self.assertEqual(compute_symbol_metrics(hist)["total_lots"], 800)
+        missing = compute_symbol_metrics(hist.iloc[:3])
+        self.assertIsNone(missing["ef_lots"])
+        self.assertNotIn("total_lots", missing)
 
 
 class TestLoadHistory(unittest.TestCase):
