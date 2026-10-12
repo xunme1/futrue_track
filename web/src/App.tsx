@@ -37,7 +37,28 @@ export default function App() {
   const [reportOpen, setReportOpen] = useState(false)
   const [seatOpen, setSeatOpen] = useState(false)
   const [receiptOpen, setReceiptOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const initialized = useRef(false)
+
+  // 功能菜单：点击页面其他区域或按 Esc 收起
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocClick = (event: MouseEvent) => {
+      if (!(event.target as HTMLElement).closest('.menu-wrap')) setMenuOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [menuOpen])
+
+  const openFeature = useCallback((open: () => void) => {
+    setMenuOpen(false)
+    open()
+  }, [])
 
   useEffect(() => {
     initialized.current = false
@@ -138,10 +159,16 @@ export default function App() {
       <button className="all-symbols-btn" onClick={openAllSymbols}>全部品种</button>
       {active && <span className="active-symbol">{active.name} {active.symbol}</span>}
       {badge && <span className="badge-area"><span className={`badge ${badge.posCls}`}>{badge.posText}</span>{badge.lastSig && <span className="badge badge-sig">{badge.lastSig.type} @ {data!.dates[badge.lastSig.i]}</span>}<span className="badge-date">{badge.lastDate}</span></span>}
-      <button className="report-btn" onClick={() => setReportOpen(true)}>📰 日报</button>
-      <button className="seat-btn" onClick={() => setSeatOpen(true)}>🪑 席位</button>
-      <button className="seat-btn" onClick={() => setReceiptOpen(true)}>📦 仓单</button>
-      <button className="legend-btn" onClick={() => setLegendOpen(true)}>📖 信号解读</button>
+      <div className="menu-wrap">
+        <button className="menu-btn" aria-expanded={menuOpen} aria-haspopup="menu"
+          onClick={() => setMenuOpen((value) => !value)}>☰ 功能</button>
+        {menuOpen && <div className="menu-panel" role="menu">
+          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setReportOpen(true))}>📰 日报<span className="menu-item-sub">每日总结</span></button>
+          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setSeatOpen(true))}>🪑 席位<span className="menu-item-sub">持仓追踪</span></button>
+          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setReceiptOpen(true))}>📦 仓单<span className="menu-item-sub">研究监控</span></button>
+          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setLegendOpen(true))}>📖 信号解读<span className="menu-item-sub">指标说明</span></button>
+        </div>}
+      </div>
     </header>
     <main className="workspace"><SplitPane collapsed={leaderboardCollapsed} left={leaderboard} right={<section className="chart-panel">
       {contractsErr && <div className="status-msg">合约池加载失败：{contractsErr}</div>}{loading && <div className="status-msg">加载中…</div>}{!loading && error && <div className="status-msg">{error}</div>}{!activeKey && report && !screeningErr && <div className="empty-chart">当前分类没有命中品种</div>}<KlineChart data={data} />

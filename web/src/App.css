@@ -44,7 +44,30 @@ button { font: inherit; }
   cursor: pointer;
   font-size: 14px;
 }
-.report-btn { margin-left: auto; }
+.menu-wrap { margin-left: auto; position: relative; }
+.menu-btn {
+  background: transparent;
+  color: #aebadb;
+  border: 1px solid #35436b;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.menu-btn:hover, .menu-btn[aria-expanded="true"] { color: #fff; border-color: #c93a3a; }
+.menu-panel {
+  position: absolute; right: 0; top: 40px; z-index: 60; min-width: 168px;
+  background: #1a2438; border: 1px solid #2b3854; border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .45); padding: 5px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; background: transparent; border: 0; border-radius: 6px;
+  color: #c6d0e4; cursor: pointer; font-size: 13px; text-align: left; white-space: nowrap;
+}
+.menu-item:hover { background: rgba(201, 58, 58, .14); color: #fff; }
+.menu-item-sub { margin-left: auto; color: #8491ae; font-size: 11px; }
 .legend-btn:hover, .leaderboard-toggle:hover, .leaderboard-close:hover, .all-symbols-btn:hover, .leaderboard-restore:hover, .report-btn:hover, .seat-btn:hover { color: #fff; border-color: #c93a3a; }
 
 .workspace { position: relative; flex: 1; min-height: 0; }
