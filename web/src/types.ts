@@ -172,3 +172,10 @@ export interface SeatAnalysis {
   date: string
   markdown: string
 }
+
+export interface ReceiptMeta {
+  date: string
+  has_html: boolean
+  summary: string | null
+  generated_at: string | null
+}

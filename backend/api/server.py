@@ -335,6 +335,53 @@ def seat_html(date: str):
     return FileResponse(fp, media_type="text/html")
 
 
+RECEIPT_DIR = DATA_DIR / "receipt"
+
+
+@app.get("/api/receipt")
+def receipt_list():
+    """已归档仓单研究监控列表（倒序）。由 backend.pipeline.receipt_daily 生成。"""
+    out = []
+    if not RECEIPT_DIR.exists():
+        return out
+    for fp in sorted(RECEIPT_DIR.glob("receipt_report_*.json"), reverse=True):
+        date = fp.stem.removeprefix("receipt_report_")
+        if not _SEAT_DATE_RE.fullmatch(date):
+            continue
+        html_path = RECEIPT_DIR / f"receipt_report_{date}.html"
+        report = None
+        if html_path.exists():
+            try:
+                value = json.loads(fp.read_text(encoding="utf-8"))
+                if (value.get("data_date") == date
+                        and value.get("html_hash") == digest(html_path.read_text(encoding="utf-8"))):
+                    report = value
+            except (OSError, ValueError, TypeError):
+                report = None
+        out.append({"date": date, "has_html": report is not None,
+                    "summary": report.get("summary") if report else None,
+                    "generated_at": report.get("generated_at") if report else None})
+    return out
+
+
+@app.get("/api/receipt/{date}/html")
+def receipt_html(date: str):
+    """某日自包含仓单研究监控 HTML 报告。"""
+    date = _check_seat_date(date)
+    fp = RECEIPT_DIR / f"receipt_report_{date}.html"
+    record_path = RECEIPT_DIR / f"receipt_report_{date}.json"
+    if not fp.exists() or not record_path.exists():
+        raise HTTPException(status_code=404, detail=f"无 {date} 的仓单监控报告")
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        body = fp.read_text(encoding="utf-8")
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404, detail="仓单报告归档损坏") from exc
+    if record.get("data_date") != date or record.get("html_hash") != digest(body):
+        raise HTTPException(status_code=404, detail="仓单报告归档校验失败")
+    return FileResponse(fp, media_type="text/html")
+
+
 # 静态前端（放在最后，避免覆盖 /api 路由）
 # 优先托管 React 构建产物 frontend/dist/（web/ 工程 npm run build 输出）；
 # 不存在时回退托管 frontend/ 根目录（旧版 dashboard.html 离线快照）

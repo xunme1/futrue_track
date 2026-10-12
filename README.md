@@ -38,7 +38,11 @@ future/
 │   │   ├── seat_report.py     # 旧 PNG/Markdown 兼容产物
 │   │   ├── seat_html.py       # 三席位事实、信号、受约束叙事与自包含 HTML 日报
 │   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（米筐合约级会员持仓 + 主次映射）
-│   │   └── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
+│   │   ├── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
+│   │   ├── receipt_core.py    # 仓单研究监控共享层：折手换算/分位/规则信号（R1-R5）
+│   │   ├── receipt_fetch.py   # 米筐注册仓单抓取：history 增量归档 + 当日快照（--backfill 回填）
+│   │   ├── receipt_html.py    # 仓单自包含 HTML：双轴/季节性/日增减/有效预报四图
+│   │   └── receipt_daily.py   # 仓单日更编排（抓数→HTML）
 │   └── api/
 │       └── server.py          # FastAPI：数据接口 + 托管前端（部署入口）
 │
@@ -142,6 +146,16 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 
 # 高盛主/次合约净持仓附录也可单独补跑；默认各显示前 15，并重渲染匹配的已发布日报：
 .venv/Scripts/python -m backend.pipeline.goldman_contract --date 20260917 --top 15
+
+# 仓单研究监控（服务器 refresh_receipt.sh 每交易日 18:20 自动执行；注册仓单/有效预报走米筐
+# futures.get_warehouse_stocks，需 FUTURES_RQDATA_LICENSE_KEY；history 归档 data/receipt/history/，
+# 报告 receipt_report_<日>.html/json，看板「📦 仓单」入口回看）：
+.venv/Scripts/python -m backend.pipeline.receipt_daily                # 一键：增量抓数→交互 HTML
+.venv/Scripts/python -m backend.pipeline.receipt_fetch --backfill     # 首次部署全量回填（2021 年起）
+.venv/Scripts/python -m backend.pipeline.receipt_daily --date 20261009  # 指定交易日补跑
+#    四图：仓单×主力价双轴（近1年）、分年季节性叠加（近5年）、日增减柱（近60日）、
+#    仓单+有效预报（仅郑商所）；规则信号 R1 供应压力/R2 供应偏紧/R3 高位套保/R4 注销潮/R5 虚实比警示。
+#    折手为估算口径：郑商所 张×warrant_units，上期所/能源中心 吨÷合约乘数，大商所原值即手。
 
 # download 进阶：
 .venv/Scripts/python -m backend.pipeline.download --symbols sc2609.INE   # 只更新指定品种
