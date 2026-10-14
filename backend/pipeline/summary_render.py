@@ -9,7 +9,8 @@ docs/summary_contract.md 撰写；缺字段时以规则化模板兜底），渲�
 
 结构对齐《期货看板日报 · 方法论与复制指南 v6》§3 五节固定模板：
 头部 → 一·核心判断（当日信号动作 + judge-card）→ 二·多头四档表 →
-三·空头镜像四档表 → 三补·🟢4h 蓄势池 → 四·动量异动榜 → 五·操作提示 → 尾·口径说明。
+三·空头镜像四档表 → 三补·🟢4h 蓄势池 → 三·补2·🎯趋势强中继倒N（v6.4）→
+四·动量异动榜 → 五·操作提示 → 尾·口径说明。
 视觉类名按 v6 §3.1 固定：.header/.oneline/.card/.judge-grid/.judge-card/.note/
 表格/.lead .pull .danger .bear .fresh .flat/.foot。
 
@@ -39,9 +40,10 @@ DASHBOARD_URL = "http://110.42.220.207:8000/"
 WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 # 版本行（v6 §3.1 头部必含）：写清当期版本号与本期生效的规则变更。
-VERSION_NOTE = ("方法论 v6.2（四档互斥：龙头 → 危险分歧 → 新贵 → 回调，空头镜像）｜"
-                "本期生效：🚀新贵 4h 强势前置（4h 评分须 > 1.0，负区回抽不算新贵）＋ 🟢 4h 蓄势池"
-                f"（实现规则版本 {RULES_VERSION}）")
+VERSION_NOTE = ("方法论 v6.4（四档互斥：龙头 → 危险分歧 → 新贵 → 回调，空头镜像）｜"
+                "本期生效：🚀新贵 4h 强势前置（4h 评分须 > 1.0，负区回抽不算新贵）＋ 🟢 4h 蓄势池 ＋ "
+                "🎯 三·补2 趋势强中继倒N（v6.4 新增：空侧 0<Δ4h<+2 弱反抽 / 多侧 −2<Δ4h<0 小回调，"
+                f"纯分数跨档筛选、档位不变）（实现规则版本 {RULES_VERSION}）")
 
 
 def _esc(s) -> str:
@@ -463,6 +465,74 @@ def s3b_pool(f, notes):
     return _section('三·补', '🟢 4h 蓄势池', "".join(parts), notes.get('pool'))
 
 
+def s3c_relay(f):
+    """三·补2 · 🎯 趋势强中继倒N品种（v6.4）：纯分数跨档筛选观察节，档位不变。"""
+    relay = f.get('relay') or {}
+    c = f.get('criteria', {})
+    r1d = c.get('RELAY_1D', 2.0)
+    r4h = c.get('RELAY_4H', 1.0)
+    rd4 = c.get('RELAY_D4H', 2.0)
+
+    def _iv(v):
+        return f"{v:g}"
+
+    short, lng = relay.get('short') or {}, relay.get('long') or {}
+    rows_s, rows_l = short.get('rows', []), lng.get('rows', [])
+    total = len(rows_s) + len(rows_l)
+    head = ('<div class="note">判据（v6.4 新增 · 纯分数 · 跨档筛选 · 档位不变）：两周期同向氛围延续 ＋ 弱逆向修正 —— '
+            f'空头侧（弱反抽）：日线 score &lt; −{_iv(r1d)} ＋ 4h score &lt; −{_iv(r4h)} ＋ 0 &lt; Δ4h &lt; +{_iv(rd4)}；'
+            f'多头侧（小回调）：日线 score &gt; +{_iv(r1d)} ＋ 4h score &gt; +{_iv(r4h)} ＋ −{_iv(rd4)} &lt; Δ4h &lt; 0。</div>')
+
+    def _rows_of(rows, side):
+        side_html = ('<span class="dn">空头·弱反抽</span>' if side == -1
+                     else '<span class="up">多头·小回调</span>')
+        out = []
+        for r in rows:
+            s1, s4 = r.get('score_1d'), r.get('score_4h')
+            tier = _esc(r['tier']) if r.get('tier') else '<span class="mut">—（未入档）</span>'
+            out.append([f"<b>{_esc(r['name'])}</b> <span class='mut'>{_esc(r['code'])}</span>",
+                        side_html,
+                        f'<span class="{"dn" if (s1 or 0) < 0 else "up"}">{_n(s1)}</span>',
+                        f'<span class="{"dn" if (s4 or 0) < 0 else "up"}">{_n(s4)}</span>',
+                        _d4h_cell(r),
+                        tier,
+                        _esc(r.get('reason'))])
+        return out
+
+    if total:
+        body = _table(['品种', '侧别', '日线 score', '4h score', 'Δ4h', '当前档位', '一句话'],
+                      _rows_of(rows_s, -1) + _rows_of(rows_l, 1))
+    else:
+        body = '<p>本期无。</p>'
+    body = head + body
+
+    foot = ['① 与四档的关系：本节是纯分数筛选的观察节，不要求曾触发新贵；已挂档位的品种同时入选、'
+            '档位不变（跨档双列，档位栏即为交叉印证）。',
+            f'② 上界 |Δ4h| &lt; {_iv(rd4)} 的用意：超出上界即「明显反抽/明显回调」，按基本原则转谨慎、'
+            '停止顺势加仓——这条上界是「小修正 → 明显修正」分水岭的量化版。']
+    n = 3
+    for side_key, label, cond in (
+            ('short', '空头', f'日线 score &lt; −{_iv(r1d)} 且 4h score &lt; −{_iv(r4h)}'),
+            ('long', '多头', f'日线 score &gt; +{_iv(r1d)} 且 4h score &gt; +{_iv(r4h)}')):
+        rows = (relay.get(side_key) or {}).get('rows', [])
+        if rows:
+            continue
+        near = (relay.get(side_key) or {}).get('near', [])
+        if near:
+            d4s = '、'.join(f"{_esc(x['code'])}（Δ4h {x['d4h']:+.2f}）" for x in near[:8])
+            foot.append(f'{_circled(n)} 本期{label}侧 0 只：双周期{label}氛围成立的 {len(near)} 只（{d4s}）'
+                        f'Δ4h 均落在小修正窗口外 → {label}侧无「强中继倒N」标的。')
+        else:
+            foot.append(f'{_circled(n)} 本期{label}侧 0 只：无双周期{label}氛围品种（{cond}）。')
+        n += 1
+    body += '<div class="note">' + '<br>'.join(foot) + '</div>'
+    return _section('三·补2', f'🎯 趋势强中继倒N品种（双侧 · 本期共 {total} 只：空 {len(rows_s)} / 多 {len(rows_l)}）', body)
+
+
+def _circled(n):
+    return {3: '③', 4: '④', 5: '⑤'}.get(n, f'({n})')
+
+
 def s4_momentum(f, notes):
     m = f.get('momentum', {})
 
@@ -714,6 +784,7 @@ def render_html(f, narrative, report_date=None, goldman_appendix=None) -> str:
         s2_long(f, notes),
         s3_short(f, notes),
         s3b_pool(f, notes),
+        s3c_relay(f),
         s4_momentum(f, notes),
         s5_tips(f, narrative, report_date),
         methodology_note(f),

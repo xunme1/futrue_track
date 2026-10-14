@@ -220,5 +220,89 @@ class TestMomentum(unittest.TestCase):
         self.assertNotIn('xx', [i['code'] for i in m['accel'] + m['decel']])
 
 
+class TestRelay(unittest.TestCase):
+    """_relay：三·补2 趋势强中继倒N（v6.4）纯分数跨档筛选与边界。"""
+
+    def _call(self, p4, p1, prev4, tl=None, ts=None):
+        tl = tl if tl is not None else {t: [] for t in sr.TIER_ORDER}
+        ts = ts if ts is not None else {t: [] for t in sr.TIER_ORDER}
+        return sr._relay(p4, p1, prev4, tl, ts)
+
+    def test_short_weak_rebound_included(self):
+        """空头侧：1d < −2、4h < −1、0 < Δ4h < +2 → 弱反抽入选"""
+        P4 = {'ap': _row('AP601', -4.16, 100.0)}
+        P1 = {'ap': _row('AP601', -6.08, 100.0)}
+        out = self._call(P4, P1, {'AP601': -5.98})   # Δ4h = +1.82
+        self.assertEqual([r['code'] for r in out['short']['rows']], ['ap'])
+        self.assertEqual(out['long']['rows'], [])
+        self.assertIn('弱反抽', out['short']['rows'][0]['reason'])
+
+    def test_strict_boundaries_excluded(self):
+        """边界全为严格不等号：s1=−2、s4=−1、Δ=0、Δ=+2 均不入选"""
+        cases = [
+            (-2.0, -4.0, -5.0),   # s1 恰为 −2
+            (-6.0, -1.0, -2.0),   # s4 恰为 −1
+            (-6.0, -4.0, -4.0),   # Δ4h = 0
+            (-6.0, -4.0, -6.0),   # Δ4h = +2 到上界
+        ]
+        for i, (s1, s4, prev) in enumerate(cases):
+            key = f'x{i}2601'
+            out = self._call({f'x{i}': _row(key, s4, 100.0)},
+                             {f'x{i}': _row(key, s1, 100.0)}, {key: prev})
+            self.assertEqual(out['short']['rows'], [], f'case {i} 不应入选')
+
+    def test_long_mirror_and_near(self):
+        """多头侧镜像入选；Δ4h 越过窗口上界（如 +5.53）→ 进 near 供脚注"""
+        P4 = {'fu': _row('fu2601', 2.5, 100.0), 'LC': _row('LC2601', -3.8, 100.0)}
+        P1 = {'fu': _row('fu2601', 3.0, 100.0), 'LC': _row('LC2601', -5.0, 100.0)}
+        prev4 = {'fu2601': 4.0, 'LC2601': -9.33}      # fu Δ=−1.5 入选；LC Δ=+5.53 明显反抽
+        out = self._call(P4, P1, prev4)
+        self.assertEqual([r['code'] for r in out['long']['rows']], ['fu'])
+        self.assertEqual(out['short']['rows'], [])
+        self.assertEqual([r['code'] for r in out['short']['near']], ['LC'])
+
+    def test_long_boundary_excluded(self):
+        """多头侧 Δ=0 或 Δ=−2 到界均不入选"""
+        for prev, tag in ((2.5, 'Δ=0'), (4.5, 'Δ=−2')):
+            out = self._call({'fu': _row('fu2601', 2.5, 100.0)},
+                             {'fu': _row('fu2601', 3.0, 100.0)}, {'fu2601': prev})
+            self.assertEqual(out['long']['rows'], [], tag)
+
+    def test_missing_delta_neither_row_nor_near(self):
+        """Δ4h 缺失：不入选也不进 near（unknown 不补零）"""
+        out = self._call({'ap': _row('AP601', -4.16, 100.0)},
+                         {'ap': _row('AP601', -6.08, 100.0)}, {})
+        self.assertEqual(out['short']['rows'], [])
+        self.assertEqual(out['short']['near'], [])
+
+    def test_tier_cross_reference_and_sort(self):
+        """当前档位跨档引用；行按 |日线 score| 降序"""
+        P4 = {'ap': _row('AP601', -4.0, 100.0), 'jd': _row('jd2601', -1.5, 100.0)}
+        P1 = {'ap': _row('AP601', -6.0, 100.0), 'jd': _row('jd2601', -2.3, 100.0)}
+        ts = {t: [] for t in sr.TIER_ORDER}
+        ts['lead'] = [{'code': 'ap'}]
+        out = self._call(P4, P1, {'AP601': -5.0, 'jd2601': -2.6}, ts=ts)
+        self.assertEqual([r['code'] for r in out['short']['rows']], ['ap', 'jd'])
+        self.assertIn('绝对熊头', out['short']['rows'][0]['tier'])
+        self.assertIsNone(out['short']['rows'][1]['tier'])
+
+    def test_render_missing_relay_key(self):
+        """旧扫描产物无 relay 键时渲染不炸，空侧脚注给出原因"""
+        from backend.pipeline import summary_render as srdr
+        html = srdr.render_html(
+            {'rules_version': 'summary-v3.0', 'data_date': '2026-09-15',
+             'prev_date': '2026-09-14', 'generated_at': {'1d': '2026-09-15 16:00:00',
+             '4h': '2026-09-15 15:40:00'}, 'created_at': '2026-09-15 16:05:00',
+             'overview': {'1d': {'long_trend': 0, 'short_trend': 0, 'long_to_short': 0},
+                          '4h': {'long_trend': 0, 'short_trend': 0, 'long_to_short': 0}},
+             'signal_actions': [], 'tiers_long': {t: [] for t in sr.TIER_ORDER},
+             'tiers_short': {t: [] for t in sr.TIER_ORDER}, 'pool': {'long': [], 'short': []},
+             'momentum': {'accel': [], 'decel': [], 'rank_moves': []},
+             'key_levels': [], 'coverage': {}, 'quality_notes': []},
+            None, '2026-09-16')
+        self.assertIn('三·补2', html)
+        self.assertIn('本期无', html)
+
+
 if __name__ == "__main__":
     unittest.main()

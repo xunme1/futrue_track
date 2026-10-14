@@ -5,7 +5,8 @@
 两要素（趋势 × 动量）× 两周期（1d / 4h）：日线定方向，4h 定节奏。
 多头侧四档互斥、按优先级取档：🥇绝对龙头 → 🔴危险分歧 → 🚀新贵 → 🟡回调，
 空头侧镜像（🐻绝对熊头 / 🔴空头危险分歧 / 📉空头新贵 / 🟡反抽）；
-⚪ 未入档中 4h 已强者分流至 🟢 4h 蓄势池。
+⚪ 未入档中 4h 已强者分流至 🟢 4h 蓄势池；三·补2（v6.4）跨档纯分数筛选
+🎯 趋势强中继倒N品种（空头弱反抽 0<Δ4h<+2 / 多头小回调 −2<Δ4h<0，档位不变）。
 v5 时代的数据诚信守卫保留：破位与评分独立核验、未知不补零、SP/BP 区分、
 close 为空的旧合约过滤、两周期行情日同步校验。见 docs/methodology_v6_review.md。
 
@@ -38,6 +39,9 @@ from backend.core.timeframes import TIMEFRAMES, json_dir, screening_file
 LEAD_1D, LEAD_4H = 4.5, 1.0     # 日线 / 4h 动量强门槛
 D4H_SIG = 1.0                   # 4h 动量环比显著变化门槛 |Δ4h|
 NEW_STRONG_4H = 1.0             # 新贵档前置：4h score 必须越过 ±1.0（与 LEAD_4H 同值）
+# 三·补2 趋势强中继倒N（v6.4 新增）：两周期同向氛围延续 + 弱逆向修正
+RELAY_1D, RELAY_4H = 2.0, 1.0   # 氛围门槛：|1d score| > 2 且 |4h score| > 1（同向）
+RELAY_D4H = 2.0                 # 逆向修正窗口：空头侧 0<Δ4h<+2 / 多头侧 −2<Δ4h<0
 
 # 板块定义（仅用于表格分组展示，v6 不再做农/工分流裁决）
 SECTORS = {
@@ -349,7 +353,8 @@ def scan(data_date=None, prev_date=None):
         'prev_date': prev_date,
         'generated_at': gen,
         'criteria': {'LEAD_1D': LEAD_1D, 'LEAD_4H': LEAD_4H,
-                     'D4H_SIG': D4H_SIG, 'NEW_STRONG_4H': NEW_STRONG_4H},
+                     'D4H_SIG': D4H_SIG, 'NEW_STRONG_4H': NEW_STRONG_4H,
+                     'RELAY_1D': RELAY_1D, 'RELAY_4H': RELAY_4H, 'RELAY_D4H': RELAY_D4H},
     }
 
     # 头部总览（多空计数与前日基线）
@@ -380,6 +385,9 @@ def scan(data_date=None, prev_date=None):
     # 四：动量异动榜（Δ4h 环比 + 排名异动 |Δrank|≥3）
     facts['momentum'] = _momentum(P['4h'], P['1d'], R['4h'], prev4, scr['1d'],
                                   facts['tiers_long'], facts['tiers_short'])
+
+    # 三·补2：趋势强中继倒N（v6.4）——双周期同向氛围延续 + 弱逆向修正，纯分数跨档筛选
+    facts['relay'] = _relay(P['4h'], P['1d'], prev4, facts['tiers_long'], facts['tiers_short'])
 
     # 操作提示素材：关键位紧贴度
     facts['key_levels'] = _key_levels(P['1d'])
@@ -578,6 +586,55 @@ def _momentum(P4, P1, R4, prev4, scr1, tiers_long, tiers_short):
             'basis': 'Δ4h = 今日 4h 评分 − 前一交易日 4h 评分（日盘收盘口径）'}
 
 
+def _relay(P4, P1, prev4, tiers_long, tiers_short):
+    """三·补2 趋势强中继倒N品种（v6.4）：两周期同向氛围延续 + 弱逆向修正。
+
+    纯分数、跨档筛选、档位不变——已挂档位的品种同时入选，不改动四档归属。
+    空头侧（弱反抽）：1d score < −2 且 4h score < −1 且 0 < Δ4h < +2；
+    多头侧（小回调）：1d score > +2 且 4h score > +1 且 −2 < Δ4h < 0。
+    Δ4h 缺失者不入选也不入 near。返回 {side: {'rows': [...], 'near': [...]}}，
+    near 为「双周期氛围成立但 Δ4h 落在窗口外」的临界者，供空侧脚注说明。
+    """
+    tier_map = {}
+    for t in TIER_ORDER:
+        for r in tiers_long[t]:
+            tier_map[r['code']] = TIER_NAMES[1][t]
+        for r in tiers_short[t]:
+            tier_map[r['code']] = TIER_NAMES[-1][t]
+    out = {s: {'rows': [], 'near': []} for s in ('long', 'short')}
+    for b, r in P4.items():
+        s4 = r.get('score')
+        if s4 is None:
+            continue
+        p1 = P1.get(b) or {}
+        s1 = p1.get('score')
+        if s1 is None:
+            continue
+        prev = prev4.get(r['key'])
+        d4 = None if prev is None else s4 - prev
+        base = {'key': r['key'], 'code': b, 'name': r.get('name', ''),
+                'sector': r.get('sector'), 'score_1d': s1, 'score_4h': s4,
+                'd4h': d4, 'tier': tier_map.get(b)}
+        if s1 < -RELAY_1D and s4 < -RELAY_4H:
+            if d4 is not None and 0 < d4 < RELAY_D4H:
+                base['reason'] = (f"日线 {s1:.2f} / 4h {s4:.2f} 双空延续，Δ4h {d4:+.2f} 落（0, +{RELAY_D4H:.0f}）"
+                                  f"弱反抽窗口——空头氛围未破，反抽高点＝加空参照位")
+                out['short']['rows'].append(base)
+            elif d4 is not None:
+                out['short']['near'].append(base)
+        elif s1 > RELAY_1D and s4 > RELAY_4H:
+            if d4 is not None and -RELAY_D4H < d4 < 0:
+                base['reason'] = (f"日线 {s1:.2f} / 4h {s4:.2f} 双多延续，Δ4h {d4:+.2f} 落（−{RELAY_D4H:.0f}, 0）"
+                                  f"小回调窗口——多头氛围未破，回踩＝加多参照位")
+                out['long']['rows'].append(base)
+            elif d4 is not None:
+                out['long']['near'].append(base)
+    for s in out.values():
+        s['rows'].sort(key=lambda x: -abs(x['score_1d']))
+        s['near'].sort(key=lambda x: -abs(x['score_1d']))
+    return out
+
+
 def _key_levels(P1, top=15):
     arr = []
     for b, r in P1.items():
@@ -646,6 +703,19 @@ def render_text(f: dict) -> str:
             L.append(f"  {r['code']:7s}{r['name']:12s}4h={_f2(r['score_4h']):>7} Δ4h={_f2(r['d4h']):>7} "
                      f"1d={_f2(r['score_1d']):>7}")
             L.append(f"      入池：{r['reason']} ｜ 提级：{r['upgrade']}")
+
+    L.append("\n" + W * 112)
+    relay = f.get('relay') or {}
+    rs, rl = relay.get('short', {}).get('rows', []), relay.get('long', {}).get('rows', [])
+    L.append(f"【三·补2】趋势强中继倒N（空 {len(rs)} / 多 {len(rl)}）"
+             f"｜判据：空侧 1d<−{RELAY_1D} 且 4h<−{RELAY_4H} 且 0<Δ4h<+{RELAY_D4H}；"
+             f"多侧镜像（1d>+{RELAY_1D} 且 4h>+{RELAY_4H} 且 −{RELAY_D4H}<Δ4h<0）")
+    for side_label, rows in (('空头·弱反抽', rs), ('多头·小回调', rl)):
+        for r in rows:
+            L.append(f"  {side_label}  {r['code']:7s}{r['name']:12s}1d={_f2(r['score_1d']):>7} "
+                     f"4h={_f2(r['score_4h']):>7} Δ4h={_f2(r['d4h']):>7} 档={r.get('tier') or '—'}")
+    if not rs and not rl:
+        L.append("  本期无。")
 
     L.append("\n" + W * 112)
     L.append(f"【四】动量异动榜（Δ4h 环比 ≥ ±{D4H_SIG}，各取前 8）")
