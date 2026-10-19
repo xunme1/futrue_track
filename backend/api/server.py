@@ -382,6 +382,15 @@ def receipt_html(date: str):
     return FileResponse(fp, media_type="text/html")
 
 
+@app.get("/previews/seat-observatory.html", include_in_schema=False)
+def seat_observatory_preview():
+    """独立席位设计预览；沿用全站登录验证，不替换正式日报归档。"""
+    path = PROJECT_ROOT / "previews" / "seat-observatory.html"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="席位设计预览尚未部署")
+    return FileResponse(path, media_type="text/html")
+
+
 # 静态前端（放在最后，避免覆盖 /api 路由）
 # 优先托管 React 构建产物 frontend/dist/（web/ 工程 npm run build 输出）；
 # 不存在时回退托管 frontend/ 根目录（旧版 dashboard.html 离线快照）

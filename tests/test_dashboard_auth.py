@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """全站密码登录验证（FUTURES_DASHBOARD_PASSWORD）的接口级测试。"""
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -22,6 +24,12 @@ class AuthDisabledTests(unittest.TestCase):
             self.assertEqual(client.get("/api/symbols").status_code, 200)
             response = client.get("/")
             self.assertNotEqual(response.status_code, 302)
+
+    def test_missing_seat_preview_returns_404(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(server, "PROJECT_ROOT", Path(tmp)), \
+                mock.patch.object(server, "DASHBOARD_PASSWORD", ""):
+            self.assertEqual(_client().get("/previews/seat-observatory.html").status_code, 404)
 
 
 class AuthEnabledTests(unittest.TestCase):
@@ -50,6 +58,19 @@ class AuthEnabledTests(unittest.TestCase):
         response = self.client.post("/api/login", json={"password": "nope"})
         self.assertEqual(response.status_code, 401)
         self.assertNotIn(server.AUTH_COOKIE, response.cookies)
+
+    def test_seat_preview_requires_login_and_serves_updated_members(self):
+        path = "/previews/seat-observatory.html"
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "/login")
+        self.client.post("/api/login", json={"password": self.PASSWORD})
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/html"))
+        self.assertIn("席位观察室", response.text)
+        for member in ("东证期货", "永安期货", "平安期货"):
+            self.assertIn(member, response.text)
 
     def test_login_sets_cookie_and_unlocks_site(self):
         response = self.client.post("/api/login", json={"password": self.PASSWORD})
