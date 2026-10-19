@@ -776,7 +776,14 @@ def load_contract_positions(date, directory=None):
     except (OSError, ValueError, TypeError):
         return None
     groups = value.get("groups") if isinstance(value, dict) else None
-    if value.get("date") != date or not isinstance(groups, dict):
+    if not isinstance(value, dict) or value.get("date") != date or not isinstance(groups, dict):
+        return None
+    if any(
+        not isinstance(groups.get(key), dict)
+        or groups[key].get("members") != [family[0] for family in spec["families"]]
+        for key, spec in GROUP_SPECS.items()
+    ):
+        print(f"[警告] {path.name} 的席位成员口径已过期，请重算主次合约包；本次不载入旧包")
         return None
     return value
 

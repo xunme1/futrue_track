@@ -15,8 +15,8 @@ from backend.pipeline import goldman_contract
 
 GROUP_MEMBERS = {
     "goldman": ["高盛期货"],
-    "major": ["国泰君安", "中信期货", "永安期货"],
-    "retail": ["东方财富", "徽商期货"],
+    "major": ["中信期货", "国泰君安", "东证期货", "永安期货"],
+    "retail": ["东方财富", "徽商期货", "平安期货"],
 }
 
 
@@ -135,6 +135,41 @@ class SeatFetchTests(unittest.TestCase):
 
 
 class SeatFactsTests(unittest.TestCase):
+    def test_group_definition_and_totals_include_all_requested_members(self):
+        from backend.pipeline.seat_core import GROUPS, MEMBER_FAMILIES
+        self.assertEqual(GROUPS[1][2], GROUP_MEMBERS["major"])
+        self.assertEqual(GROUPS[2][2], GROUP_MEMBERS["retail"])
+        self.assertEqual([family[0] for family in MEMBER_FAMILIES["Z"]], GROUP_MEMBERS["major"])
+        facts = self.facts()
+        for key, expected in (("major", 8000), ("retail", -5040)):
+            with self.subTest(group=key):
+                value = facts["groups"][key]["varieties"][0]
+                self.assertEqual(value["net_today"], expected)
+                self.assertTrue(value["today_complete"])
+                self.assertEqual(value["missing_members"], [])
+
+    def test_new_members_missing_are_explicit_not_complete(self):
+        frame = position_rows()
+        frame = frame[~frame["member_name"].isin(["东证期货", "平安期货"])]
+        facts = self.facts(frame)
+        for key, missing in (("major", "东证期货"), ("retail", "平安期货")):
+            value = facts["groups"][key]["varieties"][0]
+            self.assertTrue(value["partial"])
+            self.assertFalse(value["today_complete"])
+            self.assertEqual(value["missing_members"], [missing])
+
+    def test_contract_loader_rejects_old_group_members(self):
+        bundle = goldman_contract.build_seat_contract_bundle([], {}, {}, "20260918", "20260917")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "seat_contract_positions_20260918.json"
+            path.write_text(json.dumps(bundle), encoding="utf-8")
+            self.assertIsNotNone(seat_html.load_contract_positions("20260918", tmp))
+            bundle["groups"]["retail"]["members"].remove("平安期货")
+            path.write_text(json.dumps(bundle), encoding="utf-8")
+            self.assertIsNone(seat_html.load_contract_positions("20260918", tmp))
+            path.write_text("[]", encoding="utf-8")
+            self.assertIsNone(seat_html.load_contract_positions("20260918", tmp))
+
     def facts(self, frame=None):
         return seat_html.build_facts(
             frame if frame is not None else position_rows(),
@@ -160,8 +195,8 @@ class SeatFactsTests(unittest.TestCase):
         facts = self.facts(position_rows(missing_prev_member="永安期货"))
         row = facts["groups"]["major"]["varieties"][0]
         self.assertTrue(row["available"])
-        # 昨日永安未披露按零计：净仓=国泰君安+中信期货两家（各 2000-100）
-        self.assertEqual(row["net_prev"], 3800)
+        # 昨日永安未披露：中信、国泰君安、东证三家各 2000-100。
+        self.assertEqual(row["net_prev"], 5700)
         self.assertEqual(row["prev_missing_members"], ["永安期货"])
         self.assertTrue(row["prev_partial"])
         self.assertFalse(row["prev_complete"])
@@ -178,8 +213,8 @@ class SeatFactsTests(unittest.TestCase):
         self.assertTrue(row["partial"])
         self.assertFalse(row["today_complete"])
         self.assertEqual(row["missing_members"], ["徽商期货"])
-        # 仅东方财富有披露：100 - (900 + 11*80)
-        self.assertEqual(row["net_today"], -1680)
+        # 东方财富、平安均有披露，每家 100 - (900 + 11*80)。
+        self.assertEqual(row["net_today"], -3360)
 
     def test_zero_position_disclosure_counts_as_undisclosed(self):
         frame = position_rows()

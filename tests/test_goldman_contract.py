@@ -1,7 +1,9 @@
+import json
 import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -23,6 +25,59 @@ def row(day, member="高盛期货", long=0, short=0, long_change=None, short_cha
 
 
 class GoldmanContractTests(unittest.TestCase):
+    def test_new_members_are_aggregated_and_yongan_is_retained(self):
+        positions = {
+            "中信期货": 100, "国泰君安期货（代客）": 200,
+            "东证期货(代客)": 300, "永安期货": 400,
+            "东方财富期货": -10, "徽商期货": -20, "平安期货（代客）": -30,
+            "不相关会员": 99999,
+        }
+        rows = [row("20260918", member=name, long=max(0, net),
+                    short=max(0, -net), long_change=0, short_change=0)
+                for name, net in positions.items()]
+        for group, expected, count in (("Z", 1000, 4), ("R", -60, 3)):
+            with self.subTest(group=group):
+                value = gc.build_group_contract_position(
+                    rows, "MA2701", "20260918", "20260917", gc.MEMBER_FAMILIES[group],
+                )
+                self.assertEqual(value["today"], expected)
+                self.assertEqual(value["previous"], expected)
+                self.assertEqual(len(value["members"]), count)
+                self.assertFalse(value["partial"])
+
+    def test_member_change_rebuilds_bundle_without_refetching_raw_cache(self):
+        dominants = [{"symbol": "M", "main": "M2701", "sub": None}]
+        calls = []
+
+        def query(contract, start, end):
+            calls.append(contract)
+            return {"data": {"data": [
+                row(end, long=10, long_change=1),
+                row(end, member="东证期货", long=123, long_change=3),
+                row(end, member="平安期货", short=45, short_change=5),
+            ]}}
+
+        def chart(items, side, date, prev, path):
+            path.write_bytes(b"test-chart-" + side.encode())
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(gc, "setup_font"), patch.object(gc, "render_chart", side_effect=chart):
+            _, paths = gc.generate("20260918", "20260917", query_fn=query,
+                                   directory=tmp, dominants=dominants)
+            old = json.loads(paths["seat_json"].read_text())
+            old["groups"]["major"]["members"].remove("东证期货")
+            old["groups"]["retail"]["members"].remove("平安期货")
+            old["groups"]["major"]["varieties"][0]["main"]["today"] = 0
+            paths["seat_json"].write_text(json.dumps(old), encoding="utf-8")
+            gc.generate("20260918", "20260917", query_fn=query,
+                        directory=tmp, dominants=dominants)
+            new = json.loads(paths["seat_json"].read_text())
+            self.assertEqual(calls, ["M2701"])
+            self.assertIn("东证期货", new["groups"]["major"]["members"])
+            self.assertIn("永安期货", new["groups"]["major"]["members"])
+            self.assertEqual(new["groups"]["major"]["varieties"][0]["main"]["today"], 123)
+            self.assertEqual(new["groups"]["retail"]["varieties"][0]["main"]["today"], -45)
+
     def test_group_position_normalises_aliases_and_uses_comparable_cohort(self):
         rows = [
             row("20260918", member="国泰君安期货（代客）", long=100, short=0,
@@ -40,7 +95,7 @@ class GoldmanContractTests(unittest.TestCase):
         )
         self.assertTrue(value["available"])
         self.assertTrue(value["partial"])
-        self.assertEqual(value["missing_members"], ["永安期货"])
+        self.assertEqual(value["missing_members"], ["东证期货", "永安期货"])
         self.assertEqual(value["today"], 50)
         self.assertEqual(value["previous"], 40)
         self.assertEqual(value["change"], 10)

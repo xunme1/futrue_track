@@ -288,8 +288,8 @@ def render(df, trade_date, prev_date, out_png):
             "展示规则：仅列组内全部会员当日均在榜（前20名披露）的品种，合计为完整口径；同一公司的名称变体合并计为一家",
             color=SUB, fontsize=8.5, va="center", alpha=0.9)
     ax.text(0.045, py(cursor + 120),
-            "高盛 = 高盛期货 · 主力机构 = 国泰君安 / 中信期货 / 永安期货 · 散户 = 东方财富 / 徽商期货",
-            color=SUB, fontsize=8.5, va="center", alpha=0.85)
+            " · ".join(f"{name} = {' / '.join(members)}" for _, name, members in GROUPS),
+            color=SUB, fontsize=7.5, va="center", alpha=0.85)
     ax.text(0.045, py(cursor + 146),
             "仅供商品期货市场研究与教育用途，不构成投资建议。历史变化与模型结果不代表未来表现。",
             color=SUB, fontsize=8, va="center", alpha=0.65)

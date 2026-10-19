@@ -852,6 +852,11 @@ def generate(trade_date, prev_date, top_n=DEFAULT_TOP_N, force=False,
                 and seat_bundle.get("date") == trade_date
                 and seat_bundle.get("prev_date") == prev_date
                 and seat_bundle.get("top_n") == top_n
+                and all(
+                    (seat_bundle.get("groups") or {}).get(key, {}).get("members")
+                    == [family[0] for family in spec["families"]]
+                    for key, spec in CONTRACT_GROUPS.items()
+                )
                 and hashes.get("long") == _file_hash(paths["long"])
                 and hashes.get("short") == _file_hash(paths["short"])
             )
