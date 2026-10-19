@@ -164,7 +164,7 @@ export default function App() {
           onClick={() => setMenuOpen((value) => !value)}>☰ 功能</button>
         {menuOpen && <div className="menu-panel" role="menu">
           <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setReportOpen(true))}>📰 日报<span className="menu-item-sub">每日总结</span></button>
-          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setSeatOpen(true))}>🪑 席位<span className="menu-item-sub">持仓追踪</span></button>
+          <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setSeatOpen(true))}>🪑 席位<span className="menu-item-sub">观察室 · 每日归档</span></button>
           <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setReceiptOpen(true))}>📦 仓单<span className="menu-item-sub">研究监控</span></button>
           <button className="menu-item" role="menuitem" onClick={() => openFeature(() => setLegendOpen(true))}>📖 信号解读<span className="menu-item-sub">指标说明</span></button>
         </div>}

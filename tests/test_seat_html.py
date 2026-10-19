@@ -9,7 +9,7 @@ import pandas as pd
 from backend.api import server
 from backend.pipeline.report_store import digest
 from backend.pipeline import seat_fetch
-from backend.pipeline import seat_html
+from backend.pipeline import seat_observatory as seat_html
 from backend.pipeline import goldman_contract
 
 
@@ -339,17 +339,19 @@ class SeatFactsTests(unittest.TestCase):
             facts, narrative, signals,
             "window.html2canvas=async function(){return {toBlob:function(){}}};",
         )
-        self.assertLess(body.index("高盛席位"), body.index("主力席位"))
-        self.assertLess(body.index("主力席位"), body.index("散户席位"))
-        self.assertIn('state={limit:10,selected:[],query:\'\'}', body)
-        self.assertIn("最多同时选择 20 个品种", body)
+        self.assertIn("席位观察室 · 20260918", body)
+        self.assertIn("席位总览", body)
+        self.assertIn("品种对照", body)
+        self.assertIn("主次合约", body)
+        self.assertIn("limit:10", body)
         self.assertIn("导出 PNG", body)
         self.assertIn("html2canvas", body)
-        self.assertIn("未披露按零计", body)
-        self.assertIn("overviewStrip", body)
-        self.assertIn(".badge.long", body)
+        self.assertIn("缺失数据不是实际零持仓", body)
+        self.assertIn("暂无主次合约披露数据", body)
+        self.assertNotIn("独立设计预览", body)
+        self.assertNotIn("@@DATA@@", body)
 
-    def test_html_has_lazy_collapsed_contract_rankings_for_all_groups(self):
+    def test_html_has_lazy_contract_view_for_all_groups(self):
         facts = self.facts()
         raw_rows = position_rows().to_dict("records")
         facts["contract_positions"] = goldman_contract.build_seat_contract_bundle(
@@ -363,15 +365,15 @@ class SeatFactsTests(unittest.TestCase):
             facts, narrative, signals,
             "window.html2canvas=async function(){return {toBlob:function(){}}};",
         )
-        self.assertIn('class="contract-panel"', body)
-        self.assertIn('contractPanel(key,rows)', body)
+        self.assertIn('id="view-contracts" role="tabpanel" aria-labelledby="tab-contracts" hidden', body)
+        self.assertIn("else renderContracts()", body)
         self.assertEqual(body.count('"rankings":'), 3)
-        self.assertIn('data-contract-side="long"', body)
-        self.assertIn('data-contract-side="short"', body)
-        self.assertIn("contractChartSvg", body)
-        self.assertIn("全部品种与会员贡献明细", body)
+        self.assertIn("['long','short'].map", body)
+        self.assertIn("rankingSvg", body)
+        self.assertIn("全部合约明细", body)
+        self.assertIn("会员贡献", body)
         self.assertIn("搜索品种、代码或合约", body)
-        self.assertIn("米筐数据", body)
+        self.assertIn("F.source_coverage", body)
 
     def test_publish_archives_matching_html_hash(self):
         facts = self.facts()
@@ -385,6 +387,8 @@ class SeatFactsTests(unittest.TestCase):
             record = json.loads(json_path.read_text())
             self.assertEqual(record["html_hash"], digest(html_path.read_text()))
             self.assertEqual(record["data_date"], "20260918")
+            self.assertEqual(record["renderer_version"], "seat-observatory-v1")
+            self.assertEqual(record["schema_version"], 3)
 
 
 class SeatApiTests(unittest.TestCase):

@@ -101,10 +101,11 @@ def main(argv=None):
     except Exception as exc:  # noqa: BLE001 - 附录失败不能破坏原席位日更
         print(f"[警告] 高盛主次合约附录生成失败: {exc!r}；保留既有日报和席位产物")
 
-    # ---- 5. 自包含 HTML 日报；模型失败时使用确定性模板 ----
+    # ---- 5. 席位观察室正式模板；模型失败时使用确定性叙事 ----
+    html_path = None
     try:
         from backend.pipeline.dominant_fetch import load_or_fetch
-        from backend.pipeline.seat_html import (
+        from backend.pipeline.seat_observatory import (
             build_facts,
             build_signals,
             fallback_narrative,
@@ -154,9 +155,12 @@ def main(argv=None):
         print(f"[警告] 席位 HTML 日报生成失败: {exc!r}；保留既有席位产物")
 
     # ---- 6. 上传 OSS（futures-hub 看板归档；失败不阻断本地产物） ----
+    if html_path is None:
+        print("[警告] 本次未生成 HTML，跳过 OSS 上传，避免误发布旧归档")
+        return
     try:
         from backend.pipeline.oss_upload import upload_seat_report
-        key = upload_seat_report(trade_date)
+        key = upload_seat_report(trade_date, html_path=html_path)
         print(f"[6/6] 已上传 OSS: {key}")
     except Exception as exc:  # noqa: BLE001 - 上传失败不影响本地产物
         print(f"[警告] OSS 上传失败: {exc!r}；本地产物不受影响")

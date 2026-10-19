@@ -229,6 +229,8 @@ button { font: inherit; }
 .seat-heading .report-title { margin: 0; white-space: nowrap; }
 .seat-heading select, .seat-heading button { padding: 5px 9px; border: 1px solid #35436b; border-radius: 6px; color: #cfd8ec; background: #111a2e; font: inherit; font-size: 12px; }
 .seat-heading button { cursor: pointer; }
+.seat-open-page { color: #d5b888; font-size: 12px; text-decoration: none; white-space: nowrap; }
+.seat-open-page:hover { text-decoration: underline; }
 .seat-panel .report-list { width: 200px; }
 .seat-panel .report-list[hidden] { display: none; }
 .seat-panel .report-body { gap: 10px; }

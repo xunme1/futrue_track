@@ -36,7 +36,8 @@ future/
 │   │   ├── seat_fetch.py      # 动态商品池会员排名：米筐统一数据源
 │   │   ├── seat_plot.py       # 席位追踪第 2 步：方向图 PNG（哑铃图，跨平台字体探测）
 │   │   ├── seat_report.py     # 旧 PNG/Markdown 兼容产物
-│   │   ├── seat_html.py       # 三席位事实、信号、受约束叙事与自包含 HTML 日报
+│   │   ├── seat_observatory.py # 正式席位观察室：事实、信号、叙事与自包含 HTML 日报
+│   │   ├── seat_html.py       # 已弃用，仅转发到 seat_observatory（不再包含旧版模板）
 │   │   ├── goldman_contract.py# 高盛主/次合约净持仓 Top15 图（米筐合约级会员持仓 + 主次映射）
 │   │   ├── seat_daily.py      # 席位日更编排，并在完成后把高盛附录写入当日日报
 │   │   ├── receipt_core.py    # 仓单研究监控共享层：折手换算/分位/规则信号（R1-R5）
@@ -142,7 +143,8 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 # 需 FUTURES_RQDATA_LICENSE_KEY；AI 叙事需 DEEPSEEK_API_KEY；缺失时规则模板兜底，产物归档 data/seat/）：
 .venv/Scripts/python -m backend.pipeline.seat_daily                  # 一键：动态抓数→兼容产物→交互 HTML
 .venv/Scripts/python -m backend.pipeline.seat_daily --date 20260917  # 指定交易日补跑
-.venv/Scripts/python -m backend.pipeline.seat_html --date 20260917 --no-ai  # 用缓存单独补画 HTML
+.venv/Scripts/python -m backend.pipeline.seat_observatory --date 20260917 --no-ai  # 单独补画新版 HTML
+.venv/Scripts/python -m backend.pipeline.seat_observatory --date 20260917 --cached-only  # 离线重建，不请求行情/AI
 
 # 高盛主/次合约净持仓附录也可单独补跑；默认各显示前 15，并重渲染匹配的已发布日报：
 .venv/Scripts/python -m backend.pipeline.goldman_contract --date 20260917 --top 15
@@ -174,6 +176,14 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 .venv/Scripts/python -m uvicorn backend.api.server:app --host 0.0.0.0 --port 8000
 #    GET /api/symbols  GET /api/signals/rb8888  GET / （看板）
 ```
+
+主页右上角「功能 → 席位」打开最新可用 HTML；日期选择和「历史归档」沿用原入口，
+也可「独立打开」完整页面。日更 `seat_daily` 仅调用新版 `seat_observatory`，
+正式模板位于 `backend/pipeline/templates/seat_observatory.html`，不读取静态设计预览。
+归档仍是 `data/seat/seat_report_<日>.html/json`，API 哈希校验、下载和 OSS 路径不变。
+旧 HTML 已归档文件保持原样；重建指定日期前请先备份该日文件。`--cached-only` 从
+会员原始 CSV / 合约响应重算当前席位分组，行情仅复用已校验同日快照，叙事使用规则模板。
+旧命令 `seat_html` 仅兼容转发到新版，不再生成旧布局。
 
 高盛附录只统计「高盛期货」，按目标日固定的主力/次主力合约比较今昨日净持仓；
 主次映射与合约级会员持仓均取自米筐（繁微接口存在品种错配与覆盖缺口，已全部弃用），

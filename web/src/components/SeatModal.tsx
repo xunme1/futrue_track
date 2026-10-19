@@ -23,7 +23,8 @@ function AnalysisBlock({ markdown }: { markdown: string }) {
 }
 
 /**
- * 席位追踪弹窗：新归档优先显示自包含 HTML，旧归档回退 AI 解读 + 方向图。
+ * 正式席位观察室：按日期展示归档，新版与旧版 HTML 使用同一入口。
+ * 更早的纯图片归档继续回退 AI 解读 + 方向图。
  */
 export default function SeatModal({ open, onClose }: Props) {
   const [items, setItems] = useState<SeatMeta[]>([])
@@ -35,15 +36,17 @@ export default function SeatModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return
+    let cancelled = false
     setError(null)
     fetchSeatList()
       .then((list) => {
+        if (cancelled) return
         setItems(list)
-        setActive((cur) => (cur && list.some((r) => r.date === cur && (r.has_html || r.has_image))
-          ? cur
-          : list.find((r) => r.has_html || r.has_image)?.date ?? null))
+        setActive(list.find((r) => r.has_html)?.date
+          ?? list.find((r) => r.has_image)?.date ?? null)
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: Error) => { if (!cancelled) setError(e.message) })
+    return () => { cancelled = true }
   }, [open])
 
   useEffect(() => {
@@ -92,7 +95,7 @@ export default function SeatModal({ open, onClose }: Props) {
         className="modal-download modal-download-2"
         onClick={downloadAnalysis}>⬇️ 解读</button>}
       <div className="seat-heading">
-        <h2 className="report-title">🪑 席位追踪</h2>
+        <h2 className="report-title">🪑 席位观察室</h2>
         <select aria-label="席位日报日期" value={active ?? ''}
           onChange={(event) => setActive(event.target.value)}>
           {!active && <option value="">选择日期</option>}
@@ -105,6 +108,10 @@ export default function SeatModal({ open, onClose }: Props) {
           onClick={() => setArchiveOpen((value) => !value)}>
           {archiveOpen ? '收起归档' : '历史归档'}
         </button>
+        {activeMeta?.has_html && <a className="seat-open-page"
+          href={`/api/seat/${activeMeta.date}/html`} target="_blank" rel="noopener noreferrer">
+          独立打开 ↗
+        </a>}
       </div>
       {error && <div className="status-msg">列表加载失败:{error}</div>}
       <div className="report-body">
