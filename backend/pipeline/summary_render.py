@@ -529,6 +529,36 @@ def s3c_relay(f):
     return _section('三·补2', f'🎯 趋势强中继倒N品种（双侧 · 本期共 {total} 只：空 {len(rows_s)} / 多 {len(rows_l)}）', body)
 
 
+def s3d_options_rebound(f):
+    """独立观察节，复用原有卡片、判据提示和表格；旧事实不伪装成零候选。"""
+    if 'options_rebound' not in f:
+        return ''
+    rows = f['options_rebound']['rows']
+    criteria = f.get('criteria', {})
+    s1 = criteria.get('OPTIONS_REBOUND_1D', -4.5)
+    s4 = criteria.get('OPTIONS_REBOUND_4H', 1.2)
+    d4 = criteria.get('OPTIONS_REBOUND_D4H', 3.0)
+    head = (f'<div class="note">判据（纯分数 · 跨档筛选 · 档位不变）：'
+            f'日线 score &lt; {s1:g} 且 4h score &lt; {s4:g} 且 0 &lt; Δ4h &lt; +{d4:g}。'
+            '严格不含边界；评分或 Δ4h 缺失时不入选。</div>'
+            '<p><b>反抽中级别关键时刻，顺大逆小势必上期权。</b></p>')
+    table_rows = []
+    for r in rows:
+        score4 = r['score_4h']
+        cls4 = 'up' if score4 > 0 else ('dn' if score4 < 0 else 'mut')
+        table_rows.append([
+            f"<b>{_esc(r['name'])}</b> <span class='mut'>{_esc(r['code'])}</span>",
+            f'<span class="dn">{_n(r["score_1d"])}</span>',
+            f'<span class="{cls4}">{_n(score4)}</span>',
+            _d4h_cell(r),
+            _esc(r['tier']) if r.get('tier') else '<span class="mut">—（未入档）</span>',
+            _esc(r.get('reason')),
+        ])
+    body = (_table(['品种', '日线 score', '4h score', 'Δ4h', '当前档位', '一句话'], table_rows)
+            if rows else '<p>本期无符合条件的品种。</p>')
+    return _section('三·补3', f'反抽中级别关键时刻（本期 {len(rows)} 只）', head + body)
+
+
 def _circled(n):
     return {3: '③', 4: '④', 5: '⑤'}.get(n, f'({n})')
 
@@ -785,6 +815,7 @@ def render_html(f, narrative, report_date=None, goldman_appendix=None) -> str:
         s3_short(f, notes),
         s3b_pool(f, notes),
         s3c_relay(f),
+        s3d_options_rebound(f),
         s4_momentum(f, notes),
         s5_tips(f, narrative, report_date),
         methodology_note(f),

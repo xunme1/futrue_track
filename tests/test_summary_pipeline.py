@@ -62,7 +62,7 @@ class SummaryPipelineTests(unittest.TestCase):
         f = self.run_scan(prev4={'rb2610': 0.9})
         self.assertEqual(f['scan_version'], 3)
         for key in ('overview', 'signal_actions', 'tiers_long', 'tiers_short',
-                    'pool', 'momentum', 'key_levels', 'coverage', 'criteria'):
+                    'pool', 'momentum', 'key_levels', 'coverage', 'criteria', 'options_rebound'):
             self.assertIn(key, f)
         # 1d 多 + 4h 评分 1.5 但不在 4h 多头桶（pos4=0）→ 非龙头；Δ=+0.6 未达新贵 → 回调
         self.assertEqual(f['tiers_long']['lead'], [])
@@ -77,6 +77,38 @@ class SummaryPipelineTests(unittest.TestCase):
         f = self.run_scan(data, prev4={'rb2610': 0.5})
         self.assertEqual(f['tiers_long']['lead'][0]['score_1d'], 5)
         self.assertEqual(f['tiers_long']['lead'][0]['score_4h'], 1.5)
+
+    def test_options_rebound_scan_publish_and_section_order(self):
+        data = inputs(pos1=-1, pos4=0)
+        for tf, score in (('1d', -6.0), ('4h', 0.5)):
+            data[1][tf][0]['score'] = score
+            for bucket in data[0][tf]['buckets'].values():
+                for row in bucket:
+                    row['score'] = score
+        facts = self.run_scan(data, prev4={'rb2610': -2.0})
+        self.assertEqual([r['code'] for r in facts['options_rebound']['rows']], ['rb'])
+        self.assertEqual(facts['options_rebound']['rows'][0]['d4h'], 2.5)
+        # 三·补2 的条件更窄；新增观察区不得改变原有名单。
+        self.assertEqual(facts['relay']['short']['rows'], [])
+        body = render.publish_report(facts, output_dir=self.root).read_text()
+        self.assertLess(body.index('class="n">三·补2'), body.index('class="n">三·补3'))
+        self.assertLess(body.index('class="n">三·补3'), body.index('class="n">四'))
+        legacy = copy.deepcopy(facts)
+        del legacy['options_rebound']
+        self.assertEqual(body.replace(render.s3d_options_rebound(facts), ''),
+                         render.render_html(legacy, None))
+        record = json.loads((self.root / 'daily_summary_2026-09-16.json').read_text())
+        self.assertEqual(record['facts']['options_rebound'], facts['options_rebound'])
+        self.assertIn('【三·补3】', scan.render_text(facts))
+
+    def test_options_rebound_thresholds_bound_to_fingerprint_without_other_changes(self):
+        first = self.run_scan(prev4={'rb2610': 0.5})
+        with patch.object(scan, 'OPTIONS_REBOUND_4H', 1.3):
+            second = self.run_scan(prev4={'rb2610': 0.5})
+        self.assertNotEqual(first['input_hash'], second['input_hash'])
+        for field in ('overview', 'signal_actions', 'tiers_long', 'tiers_short',
+                      'pool', 'relay', 'momentum', 'key_levels', 'coverage'):
+            self.assertEqual(first[field], second[field], field)
 
     def test_numeric_symbols_remain_distinct(self):
         keys = ('000016', '000300', '000852', '588000')

@@ -26,6 +26,7 @@ close 为空的旧合约过滤、两周期行情日同步校验。见 docs/metho
 """
 import argparse
 import json
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,6 +43,10 @@ NEW_STRONG_4H = 1.0             # 新贵档前置：4h score 必须越过 ±1.0�
 # 三·补2 趋势强中继倒N（v6.4 新增）：两周期同向氛围延续 + 弱逆向修正
 RELAY_1D, RELAY_4H = 2.0, 1.0   # 氛围门槛：|1d score| > 2 且 |4h score| > 1（同向）
 RELAY_D4H = 2.0                 # 逆向修正窗口：空头侧 0<Δ4h<+2 / 多头侧 −2<Δ4h<0
+# 三·补3：独立观察条件；4h 上限是正 1.2，不要求持仓方向或趋势桶。
+OPTIONS_REBOUND_1D = -4.5
+OPTIONS_REBOUND_4H = 1.2
+OPTIONS_REBOUND_D4H = 3.0
 
 # 板块定义（仅用于表格分组展示，v6 不再做农/工分流裁决）
 SECTORS = {
@@ -354,7 +359,10 @@ def scan(data_date=None, prev_date=None):
         'generated_at': gen,
         'criteria': {'LEAD_1D': LEAD_1D, 'LEAD_4H': LEAD_4H,
                      'D4H_SIG': D4H_SIG, 'NEW_STRONG_4H': NEW_STRONG_4H,
-                     'RELAY_1D': RELAY_1D, 'RELAY_4H': RELAY_4H, 'RELAY_D4H': RELAY_D4H},
+                     'RELAY_1D': RELAY_1D, 'RELAY_4H': RELAY_4H, 'RELAY_D4H': RELAY_D4H,
+                     'OPTIONS_REBOUND_1D': OPTIONS_REBOUND_1D,
+                     'OPTIONS_REBOUND_4H': OPTIONS_REBOUND_4H,
+                     'OPTIONS_REBOUND_D4H': OPTIONS_REBOUND_D4H},
     }
 
     # 头部总览（多空计数与前日基线）
@@ -389,6 +397,10 @@ def scan(data_date=None, prev_date=None):
     # 三·补2：趋势强中继倒N（v6.4）——双周期同向氛围延续 + 弱逆向修正，纯分数跨档筛选
     facts['relay'] = _relay(P['4h'], P['1d'], prev4, facts['tiers_long'], facts['tiers_short'])
 
+    # 三·补3：反抽中级别关键时刻；仅增加观察名单，不改动四档或三·补2。
+    facts['options_rebound'] = _options_rebound(
+        P['4h'], P['1d'], prev4, facts['tiers_long'], facts['tiers_short'])
+
     # 操作提示素材：关键位紧贴度
     facts['key_levels'] = _key_levels(P['1d'])
 
@@ -405,7 +417,10 @@ def scan(data_date=None, prev_date=None):
         quality_notes.append(f"Δ4h 未知（{prev_date} 4h 评分缺失），相关分档暂定：" + '、'.join(sorted(set(no_d4))))
     facts['input_hash'] = digest({'rules': RULES_VERSION, 'screen': raw_scr, 'symbols': sym,
                                   'previous': prev, 'prev_4h_scores': prev4,
-                                  'data_date': data_date, 'prev_date': prev_date})
+                                  'data_date': data_date, 'prev_date': prev_date,
+                                  'options_rebound_criteria': {
+                                      k: v for k, v in facts['criteria'].items()
+                                      if k.startswith('OPTIONS_REBOUND_')}})
     facts['input_snapshot'] = {'screen': scr, 'symbols': sym}
     return facts
 
@@ -635,6 +650,38 @@ def _relay(P4, P1, prev4, tiers_long, tiers_short):
     return out
 
 
+def _options_rebound(P4, P1, prev4, tiers_long, tiers_short):
+    """三·补3：1d < -4.5、4h < +1.2、0 < Δ4h < +3，全部为严格边界。
+
+    沿用日报品种级评分和前一交易日日盘收盘环比；不增加持仓/桶限制，
+    不修改既有档位。未知或非有限数值不入选，按日线评分升序展示。
+    """
+    tier_map = {
+        r['code']: TIER_NAMES[side][tier]
+        for side, tiers in ((1, tiers_long), (-1, tiers_short))
+        for tier in TIER_ORDER for r in tiers.get(tier, [])
+    }
+    rows = []
+    for code, r in P4.items():
+        s1 = (P1.get(code) or {}).get('score')
+        s4, previous = r.get('score'), prev4.get(r['key'])
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                   and math.isfinite(v) for v in (s1, s4, previous)):
+            continue
+        d4 = s4 - previous
+        if not (s1 < OPTIONS_REBOUND_1D and s4 < OPTIONS_REBOUND_4H
+                and 0 < d4 < OPTIONS_REBOUND_D4H):
+            continue
+        rows.append({
+            'key': r['key'], 'code': code, 'name': r.get('name', ''),
+            'sector': r.get('sector'), 'score_1d': s1, 'score_4h': s4,
+            'prev_score_4h': previous, 'd4h': d4, 'tier': tier_map.get(code),
+            'reason': f'日线 {s1:.2f}，4h {s4:.2f}，Δ4h {d4:+.2f}，满足本节反抽观察条件。',
+        })
+    rows.sort(key=lambda r: (r['score_1d'], r['code']))
+    return {'rows': rows}
+
+
 def _key_levels(P1, top=15):
     arr = []
     for b, r in P1.items():
@@ -716,6 +763,17 @@ def render_text(f: dict) -> str:
                      f"4h={_f2(r['score_4h']):>7} Δ4h={_f2(r['d4h']):>7} 档={r.get('tier') or '—'}")
     if not rs and not rl:
         L.append("  本期无。")
+
+    if 'options_rebound' in f:
+        L.append("\n" + W * 112)
+        rows = f['options_rebound']['rows']
+        L.append(f"【三·补3】反抽中级别关键时刻（本期 {len(rows)} 只）")
+        L.append("  反抽中级别关键时刻，顺大逆小势必上期权。")
+        for r in rows:
+            L.append(f"  {r['code']:7s}{r['name']:12s}1d={_f2(r['score_1d']):>7} "
+                     f"4h={_f2(r['score_4h']):>7} Δ4h={_f2(r['d4h']):>7} 档={r.get('tier') or '—'}")
+        if not rows:
+            L.append("  本期无符合条件的品种。")
 
     L.append("\n" + W * 112)
     L.append(f"【四】动量异动榜（Δ4h 环比 ≥ ±{D4H_SIG}，各取前 8）")

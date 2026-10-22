@@ -7,6 +7,7 @@
 任一判据被改动而结果没变 → 这里会红。
 """
 import json
+import copy
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -302,6 +303,81 @@ class TestRelay(unittest.TestCase):
             None, '2026-09-16')
         self.assertIn('三·补2', html)
         self.assertIn('本期无', html)
+
+
+class TestOptionsRebound(unittest.TestCase):
+    def call(self, s1=-6.0, s4=0.5, previous=-1.0, pos=0):
+        return sr._options_rebound(
+            {'rb': _r4('rb2610', s4, pos=pos, in_bucket=False)},
+            {'rb': _row('rb2610', s1, 100, pos=pos)},
+            {'rb2610': previous}, {}, {})['rows']
+
+    def test_positive_zero_and_negative_4h_allowed_without_position_gate(self):
+        for s4 in (-5.0, 0.0, 0.5, 1.199):
+            for pos in (-1, 0, 1):
+                with self.subTest(s4=s4, pos=pos):
+                    rows = self.call(s4=s4, previous=s4 - 2.5, pos=pos)
+                    self.assertEqual(len(rows), 1)
+                    self.assertAlmostEqual(rows[0]['d4h'], 2.5)
+                    self.assertEqual(rows[0]['prev_score_4h'], s4 - 2.5)
+
+    def test_strict_boundaries_and_outside_values_excluded(self):
+        for s1, s4, previous in (
+                (-4.5, 0.5, -1), (-4.49, 0.5, -1),
+                (-6, 1.2, 0), (-6, 1.3, 0),
+                (-6, 0.5, 0.5), (-6, 0.5, 0.6),
+                (-6, 0.5, -2.5), (-6, 0.5, -2.6)):
+            with self.subTest(s1=s1, s4=s4, previous=previous):
+                self.assertEqual(self.call(s1, s4, previous), [])
+        self.assertEqual(len(self.call(-4.501, 1.199, 1.198)), 1)
+
+    def test_missing_invalid_and_nonfinite_scores_excluded(self):
+        for value in (None, float('nan'), float('inf'), float('-inf'), True, '0.5'):
+            for index in range(3):
+                args = [-6.0, 0.5, -1.0]
+                args[index] = value
+                with self.subTest(value=value, index=index):
+                    self.assertEqual(self.call(*args), [])
+        self.assertEqual(sr._options_rebound(
+            {'rb': _r4('rb2610', 0.5)}, {}, {'rb2610': -1}, {}, {})['rows'], [])
+        self.assertEqual(sr._options_rebound(
+            {'rb': _r4('rb2610', 0.5)}, {'rb': _row('rb2610', -6, 100)},
+            {}, {}, {})['rows'], [])
+
+    def test_sort_cross_reference_and_inputs_unchanged(self):
+        p4 = {code: _r4(code + '2610', 0.5) for code in ('rb', 'cu', 'al')}
+        p1 = {code: _row(code + '2610', score, 100)
+              for code, score in (('rb', -6), ('cu', -8), ('al', -8))}
+        previous = {r['key']: -1 for r in p4.values()}
+        tiers = {'danger': [{'code': 'rb'}]}
+        arguments = (p4, p1, previous, {}, tiers)
+        before = copy.deepcopy(arguments)
+        rows = sr._options_rebound(*arguments)['rows']
+        self.assertEqual([r['code'] for r in rows], ['al', 'cu', 'rb'])
+        self.assertEqual(rows[2]['tier'], sr.TIER_NAMES[-1]['danger'])
+        self.assertIsNone(rows[0]['tier'])
+        self.assertEqual(arguments, before)
+
+    def test_render_escapes_text_and_preserves_existing_style(self):
+        from backend.pipeline import summary_render as render
+        row = self.call()[0]
+        row.update(name='<b>品种</b>', reason='<script>bad</script>', tier='<i>档位</i>')
+        body = render.s3d_options_rebound({'options_rebound': {'rows': [row]}})
+        self.assertIn('<div class="card">', body)
+        self.assertIn('<div class="tbwrap"><table>', body)
+        self.assertIn('日线 score &lt; -4.5 且 4h score &lt; 1.2 且 0 &lt; Δ4h &lt; +3', body)
+        self.assertIn('反抽中级别关键时刻，顺大逆小势必上期权。', body)
+        self.assertIn('&lt;script&gt;bad&lt;/script&gt;', body)
+        self.assertIn('&lt;b&gt;品种&lt;/b&gt;', body)
+        self.assertIn('&lt;i&gt;档位&lt;/i&gt;', body)
+        self.assertNotIn('<script>', body)
+
+    def test_empty_results_distinguished_from_old_archive_without_scan(self):
+        from backend.pipeline import summary_render as render
+        body = render.s3d_options_rebound({'options_rebound': {'rows': []}})
+        self.assertIn('本期 0 只', body)
+        self.assertIn('本期无符合条件的品种', body)
+        self.assertEqual(render.s3d_options_rebound({}), '')
 
 
 if __name__ == "__main__":
