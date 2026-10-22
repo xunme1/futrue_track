@@ -164,6 +164,7 @@ export interface SeatMeta {
   has_analysis: boolean
   has_detail: boolean
   has_html: boolean
+  html_hash?: string | null
   summary: string | null
   generated_at: string | null
 }

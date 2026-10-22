@@ -181,6 +181,11 @@ python -m backend.pipeline.daily           # 纯本地计算：读 data/store，
 也可「独立打开」完整页面。日更 `seat_daily` 仅调用新版 `seat_observatory`，
 正式模板位于 `backend/pipeline/templates/seat_observatory.html`，不读取静态设计预览。
 归档仍是 `data/seat/seat_report_<日>.html/json`，API 哈希校验、下载和 OSS 路径不变。
+席位列表返回已校验的 `html_hash`；内嵌页、独立打开及下载共用内容版本链接，
+列表与 HTML 禁止复用浏览器缓存。打开席位窗口、回到可见页面及窗口打开期间每分钟
+都会检查更新：当前最新报告随发布更新，手动选择的历史日期保持不变；内容未变不重载。
+主页入口 HTML 每次访问重新校验，避免继续加载旧前端。部署时已打开的旧主页需普通
+刷新一次以加载新代码，之后同日重建报告无需强刷或手动添加参数。
 旧 HTML 已归档文件保持原样；重建指定日期前请先备份该日文件。`--cached-only` 从
 会员原始 CSV / 合约响应重算当前席位分组，行情仅复用已校验同日快照，叙事使用规则模板。
 旧命令 `seat_html` 仅兼容转发到新版，不再生成旧布局。

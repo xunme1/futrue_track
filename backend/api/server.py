@@ -66,9 +66,19 @@ async def dashboard_auth(request: Request, call_next):
     if DASHBOARD_PASSWORD and request.url.path not in _AUTH_OPEN_PATHS \
             and not _is_authed(request):
         if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": "未登录或会话已过期"}, status_code=401)
-        return RedirectResponse("/login", status_code=302)
-    return await call_next(request)
+            response = JSONResponse({"detail": "未登录或会话已过期"}, status_code=401)
+        else:
+            response = RedirectResponse("/login", status_code=302)
+    else:
+        response = await call_next(request)
+    path = request.url.path
+    if path == "/api/seat" or re.fullmatch(r"/api/seat/[^/]+/html", path):
+        # A date can be republished. Never reuse stale lists, errors or report bytes.
+        response.headers["Cache-Control"] = "private, no-store"
+    elif path in ("/", "/index.html"):
+        # Revalidate the entry document so ordinary navigation picks up new JS assets.
+        response.headers["Cache-Control"] = "private, no-cache, must-revalidate"
+    return response
 
 
 _LOGIN_PAGE = """<!DOCTYPE html>
@@ -293,6 +303,7 @@ def seat_list():
                     "has_analysis": (SEAT_DIR / f"seat_analysis_{date}.md").exists(),
                     "has_detail": (SEAT_DIR / f"seat_detail_{date}.json").exists(),
                     "has_html": report is not None,
+                    "html_hash": report.get("html_hash") if report else None,
                     "summary": report.get("summary") if report else None,
                     "generated_at": report.get("generated_at") if report else None})
     return out
@@ -332,7 +343,7 @@ def seat_html(date: str):
         raise HTTPException(status_code=404, detail="席位日报归档损坏") from exc
     if record.get("data_date") != date or record.get("html_hash") != digest(body):
         raise HTTPException(status_code=404, detail="席位日报归档校验失败")
-    return FileResponse(fp, media_type="text/html")
+    return FileResponse(fp, media_type="text/html", headers={"ETag": f'"{record["html_hash"]}"'})
 
 
 RECEIPT_DIR = DATA_DIR / "receipt"

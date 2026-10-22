@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchSeatAnalysis, fetchSeatList } from '../api'
+import { latestSeatDate, refreshedSeatDate, seatHtmlUrl } from '../seatReports'
 import type { SeatMeta } from '../types'
 
 interface Props {
@@ -33,32 +34,57 @@ export default function SeatModal({ open, onClose }: Props) {
   const [analysis, setAnalysis] = useState<string | null>(null)
   const [analysisErr, setAnalysisErr] = useState<string | null>(null)
   const [archiveOpen, setArchiveOpen] = useState(false)
+  const activeHasHtml = items.find((item) => item.date === active)?.has_html
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    let previousLatest: string | null = null
+    let inFlight = false
+    let controller: AbortController | null = null
     setError(null)
-    fetchSeatList()
-      .then((list) => {
+    const refresh = async () => {
+      if (cancelled || inFlight || document.visibilityState === 'hidden') return
+      inFlight = true
+      controller = new AbortController()
+      try {
+        const list = await fetchSeatList(controller.signal)
         if (cancelled) return
+        const priorLatest = previousLatest
+        previousLatest = latestSeatDate(list)
         setItems(list)
-        setActive(list.find((r) => r.has_html)?.date
-          ?? list.find((r) => r.has_image)?.date ?? null)
-      })
-      .catch((e: Error) => { if (!cancelled) setError(e.message) })
-    return () => { cancelled = true }
+        setActive((current) => refreshedSeatDate(current, list, priorLatest))
+        setError(null)
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : '更新失败')
+      } finally {
+        inFlight = false
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 60_000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      cancelled = true
+      controller?.abort()
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [open])
 
   useEffect(() => {
     if (!open || !active) return
-    const meta = items.find((item) => item.date === active)
     setAnalysis(null)
     setAnalysisErr(null)
-    if (meta?.has_html) return
+    if (activeHasHtml) return
+    let cancelled = false
     fetchSeatAnalysis(active)
-      .then((r) => setAnalysis(r.markdown))
-      .catch((e: Error) => setAnalysisErr(e.message))
-  }, [open, active, items])
+      .then((r) => { if (!cancelled) setAnalysis(r.markdown) })
+      .catch((e: Error) => { if (!cancelled) setAnalysisErr(e.message) })
+    return () => { cancelled = true }
+  }, [open, active, activeHasHtml])
 
   useEffect(() => {
     if (!open) return
@@ -70,6 +96,7 @@ export default function SeatModal({ open, onClose }: Props) {
   if (!open) return null
 
   const activeMeta = items.find((r) => r.date === active) ?? null
+  const htmlUrl = activeMeta?.has_html ? seatHtmlUrl(activeMeta) : undefined
 
   const downloadAnalysis = () => {
     if (!active || !analysis) return
@@ -86,7 +113,7 @@ export default function SeatModal({ open, onClose }: Props) {
     <div className="modal-panel report-panel seat-panel" onClick={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose}>✕ 关闭</button>
       {activeMeta?.has_html ? <a className="modal-download"
-        href={`/api/seat/${activeMeta.date}/html`}
+        href={htmlUrl}
         download={`seat_report_${activeMeta.date}.html`}>⬇️ HTML 日报</a>
         : activeMeta?.has_image && <a className="modal-download"
         href={`/api/seat/${activeMeta.date}/image`}
@@ -109,7 +136,7 @@ export default function SeatModal({ open, onClose }: Props) {
           {archiveOpen ? '收起归档' : '历史归档'}
         </button>
         {activeMeta?.has_html && <a className="seat-open-page"
-          href={`/api/seat/${activeMeta.date}/html`} target="_blank" rel="noopener noreferrer">
+          href={htmlUrl} target="_blank" rel="noopener noreferrer">
           独立打开 ↗
         </a>}
       </div>
@@ -133,7 +160,7 @@ export default function SeatModal({ open, onClose }: Props) {
         </aside>
         <section className="report-viewer seat-viewer">
           {activeMeta?.has_html
-            ? <iframe key={activeMeta.date} src={`/api/seat/${activeMeta.date}/html`}
+            ? <iframe key={htmlUrl} src={htmlUrl}
                 title={`席位持仓日报 ${fmtDate(activeMeta.date)}`} />
             : activeMeta
               ? <div className="seat-scroll">

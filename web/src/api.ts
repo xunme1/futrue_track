@@ -1,7 +1,7 @@
 import type { ContractInfo, ReceiptMeta, ReportMeta, ScreeningReport, SeatAnalysis, SeatMeta, SignalData, Timeframe } from './types'
 
-async function getJson<T>(url: string): Promise<T> {
-  const resp = await fetch(url)
+async function getJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const resp = await fetch(url, options)
   if (!resp.ok) {
     if (resp.status === 404) throw new Error('暂无数据')
     throw new Error(`请求失败 ${resp.status}: ${url}`)
@@ -36,8 +36,8 @@ export function fetchReports(): Promise<ReportMeta[]> {
 }
 
 /** 归档席位追踪列表（由 backend.pipeline.seat_daily 生成）。 */
-export function fetchSeatList(): Promise<SeatMeta[]> {
-  return getJson<SeatMeta[]>('/api/seat')
+export function fetchSeatList(signal?: AbortSignal): Promise<SeatMeta[]> {
+  return getJson<SeatMeta[]>('/api/seat', { cache: 'no-store', signal })
 }
 
 /** 某日席位分歧解读（Markdown 文本）。 */
