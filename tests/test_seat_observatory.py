@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -30,6 +32,109 @@ class ObservatoryTests(unittest.TestCase):
         signals = report.build_signals(facts)
         return report.publish_report(facts, report.fallback_narrative(facts, signals), signals,
                                      directory=self.root, html2canvas_source="window.html2canvas=()=>{};")
+
+    def run_dashboard_js(self, assertions):
+        """Execute the generated report's real JS, without browser event wiring."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is needed to execute dashboard filter tests")
+        path, _ = self.publish(self.facts())
+        body = path.read_text()
+        payload = re.search(r'<script id="dataset" type="application/json">(.*?)</script>',
+                            body, re.DOTALL).group(1)
+        script = re.search(r"<script>\s*('use strict';.*?)</script>", body, re.DOTALL).group(1)
+        script = script.split("document.addEventListener('click',", 1)[0]
+        harness = """
+const {readFileSync}=require('node:fs'),vm=require('node:vm');
+const input=JSON.parse(readFileSync(0,'utf8')),elements=new Map();
+const document={getElementById(id){
+  if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',setAttribute(){}});
+  return elements.get(id);
+}};
+document.getElementById('dataset').textContent=input.payload;
+vm.runInNewContext(input.script,{document,assert:require('node:assert/strict'),
+  localStorage:{getItem(){return null;}}},{timeout:5000});
+"""
+        result = subprocess.run([node, "-e", harness], input=json.dumps({
+            "payload": payload, "script": script + "\n" + assertions,
+        }), text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_goldman_filter_requires_disclosed_opposite_nonzero_positions(self):
+        self.run_dashboard_js("""
+const a=row('goldman','MA'),b=row('major','MA'),c=row('retail','MA');
+// Goldman disclosure, major disclosure/net, retail disclosure/net, expected.
+const cases=[
+  [false,true,100,true,-80,true], [false,true,-100,true,80,true],
+  [false,true,100,true,80,false], [false,true,-100,true,-80,false],
+  [false,false,100,true,-80,false], [false,true,100,false,-80,false],
+  [false,true,0,true,-80,false], [false,true,100,true,0,false],
+  [true,true,100,true,-80,false],
+  [false,true,null,true,-80,false], [false,true,100,true,null,false],
+  [false,true,NaN,true,-80,false], [false,true,Infinity,true,-80,false],
+];
+for(const [ga,ma,m,ra,r,expected] of cases){
+  Object.assign(a,{available:ga,net_today:0});
+  Object.assign(b,{available:ma,net_today:m});
+  Object.assign(c,{available:ra,net_today:r});
+  assert.equal(reverseNoGoldman('MA'),expected,JSON.stringify([ga,ma,m,ra,r]));
+}
+Object.assign(b,{available:true,net_today:100,partial:true});
+Object.assign(c,{available:true,net_today:-80,partial:true});
+assert.equal(reverseNoGoldman('MA'),true,'partial disclosure remains eligible');
+delete index.goldman.MA;
+assert.equal(reverseNoGoldman('MA'),true,'absent Goldman row is undisclosed');
+delete index.major.MA;
+assert.equal(reverseNoGoldman('MA'),false,'absent major row is ineligible');
+""")
+
+    def test_original_filters_remain_unchanged_and_new_filter_combines_with_search(self):
+        self.run_dashboard_js(r"""
+const a=row('goldman','MA'),b=row('major','MA'),c=row('retail','MA');
+Object.assign(a,{available:true,net_today:50});
+Object.assign(b,{available:true,net_today:100});
+Object.assign(c,{available:true,net_today:-80});
+for(const filter of ['all','same','reverse']){state.filter=filter;assert.equal(matches('MA'),true);}
+state.filter='stars';assert.equal(matches('MA'),false);
+stars.add('MA');assert.equal(matches('MA'),true);
+state.filter='reverse-no-goldman';assert.equal(matches('MA'),false);
+a.available=false;a.net_today=null;
+assert.equal(matches('MA'),true);
+assert.equal(same('MA'),false);assert.equal(reverse('MA'),false);
+for(const query of ['甲醇','ma','MA2701','ma2703']){
+  state.query=query;assert.equal(matches('MA'),true,query);
+}
+state.query='铜';assert.equal(matches('MA'),false);
+state.query='';renderFilters();
+const filters=$('filters').innerHTML;
+assert.equal((filters.match(/class="chip"/g)||[]).length,5);
+assert.match(filters,/data-filter="reverse-no-goldman" aria-pressed="true">机构散户反向（高盛未披露）<span class="count">1<\/span>/);
+assert.match(filters,/data-filter="reverse" aria-pressed="false">机构散户反向<span class="count">0<\/span>/);
+assert.match(directionFlag('MA'),/高盛未披露/);
+a.available=true;a.net_today=50;
+assert.equal(directionFlag('MA'),'<span class="flag reverse">机构散户反向</span>');
+c.net_today=80;
+assert.equal(directionFlag('MA'),'<span class="flag">机构同向</span>');
+""")
+
+    def test_new_filter_applies_to_overview_comparison_and_contracts(self):
+        self.run_dashboard_js("""
+Object.assign(row('goldman','MA'),{available:false,net_today:null});
+Object.assign(row('major','MA'),{available:true,net_today:100});
+Object.assign(row('retail','MA'),{available:true,net_today:-80});
+state.filter='reverse-no-goldman';
+renderOverview();assert.match($('seat-grid').innerHTML,/data-open="MA"/);
+renderCompare();assert.match($('matrix-wrap').innerHTML,/高盛未披露/);
+F.contract_positions={groups:{major:{coverage:{},varieties:[{symbol:'MA',
+  main:{contract:'MA2701',available:true,today:100,previous:90,change:10,members:[]},
+  sub:{contract:'MA2703',available:false,members:[]}}]}}};
+state.contractGroup='major';state.view='contracts';state.contractMode='table';
+renderContracts();assert.match($('contract-content').innerHTML,/MA2701/);
+row('goldman','MA').available=true;
+renderOverview();assert.doesNotMatch($('seat-grid').innerHTML,/data-open="MA"/);
+renderCompare();assert.doesNotMatch($('matrix-wrap').innerHTML,/data-open="MA"/);
+renderContracts();assert.doesNotMatch($('contract-content').innerHTML,/MA2701/);
+""")
 
     def test_old_entry_only_forwards_to_production_renderer(self):
         self.assertIs(seat_html.render_html, report.render_html)
